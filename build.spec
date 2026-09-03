@@ -4,10 +4,15 @@
 # Build command:
 #   pyinstaller build.spec --noconfirm
 #
+# Entry point:
+#   gui_launcher.py — packaged exe always launches the GUI on double-click
+#   (dev mode keeps `python -m mvu_lint scan|gui`).
+#
 # Native binary handling (SPEC Appendix B):
 #   - sqlite-vec: vec0.dll / vec0.so must sit next to the bundled sqlite3
 #   - llama-cpp-python: wheel ships its own DLLs; --hidden-import keeps
-#     PyInstaller from pruning the module.
+#     PyInstaller from pruning the module. (Not installed yet — optional AI
+#     dependency, Phase 5+. collect_dynamic_libs returns [] gracefully.)
 #
 # Wine note: llama-cpp-python DLLs are located at runtime via the package
 # dir; keep `collect_dynamic_libs` so they are copied next to the exe.
@@ -32,7 +37,7 @@ datas = sqlite_vec_datas
 binaries = sqlite_vec_binaries + llama_binaries
 
 a = Analysis(
-    ["mvu_lint/__main__.py"],
+    ["gui_launcher.py"],
     pathex=[],
     binaries=binaries,
     datas=datas,
