@@ -71,12 +71,13 @@ def test_run_static_check_finds_errors(card_zip):
 
     assert summary.total_files == 5     # 世界书 x3 + 脚本 x1 + schema.json
     assert summary.files_scanned == 3   # helper.js contains no EJS
-    assert summary.errors_inserted == 2  # unclosed tag + <%- unsafe out
+    assert summary.errors_inserted == 3  # unclosed tag + <%- unsafe + linkage error for 备注
     assert summary.schema_path_count == 2  # 主角 (object) + 主角.好感度 (leaf)
 
     errors = controller.get_errors()
     levels = {e["level"] for e in errors}
     assert "Lv.1" in levels  # unclosed tag
+    assert "Lv.2" in levels  # linkage error: 备注 not in schema
     assert "Lv.4" in levels  # unsafe output
     controller.close()
 

@@ -110,7 +110,7 @@ def test_controller_gui_integration(app, card_zip):
 
     panel = ReportPanel()
     panel.show_errors(controller.get_errors(), counts=controller.get_counts())
-    assert panel.table.rowCount() == summary.errors_inserted == 2
+    assert panel.table.rowCount() == summary.errors_inserted == 3
     controller.close()
 
 
