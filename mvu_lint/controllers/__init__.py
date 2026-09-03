@@ -1,0 +1,1 @@
+"""Application controllers package — GUI-agnostic orchestration."""
