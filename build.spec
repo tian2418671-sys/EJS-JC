@@ -32,7 +32,7 @@ hiddenimports = [
     "numpy",
 ]
 
-datas = sqlite_vec_datas
+datas = sqlite_vec_datas + [("resources", "resources")]
 
 binaries = sqlite_vec_binaries + llama_binaries
 
@@ -70,6 +70,6 @@ exe = EXE(
     upx=False,           # UPX 可能破坏 llama.dll / vec0.dll，关闭
     console=False,       # GUI 应用
     disable_windowed_traceback=False,
-    icon="resources/icon.ico" if False else None,
+    icon="resources/icon.ico",
     version=None,
 )

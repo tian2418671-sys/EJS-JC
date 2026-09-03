@@ -198,6 +198,18 @@ class DatabaseManager:
         ).fetchone()
         return row[0] > 0
 
+    def set_error_status(self, error_id: str, status: str) -> bool:
+        """Update a single error's status (pending / fixed / ignored).
+
+        Returns True if exactly one row was affected.
+        """
+        cur = self.conn.execute(
+            "UPDATE static_errors SET status = ? WHERE error_id = ?",
+            (status, error_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     # ── schema_cache ────────────────────────────────────────────────
 
     def insert_schema_path(self, path: str, path_type: str,

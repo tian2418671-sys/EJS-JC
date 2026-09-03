@@ -149,6 +149,10 @@ class AppController:
     def clear_errors(self):
         self.db.clear_errors()
 
+    def set_error_status(self, error_id: str, status: str) -> bool:
+        """Update one error's status and return whether it matched a row."""
+        return self.db.set_error_status(error_id, status)
+
     # ── Lifecycle ─────────────────────────────────────────────────
 
     def close(self):

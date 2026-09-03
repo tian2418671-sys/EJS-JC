@@ -1,15 +1,17 @@
 """Main window — menu bar, drop zone, project info, report panel."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -20,8 +22,12 @@ from PySide6.QtWidgets import (
 
 from ..controllers.app_controller import AppController, ScanSummary
 from ..controllers.scan_worker import ScanWorker
+from ..utils.report_exporter import export_csv, export_html, export_markdown
 from .drop_zone import DropZone
 from .report_panel import ReportPanel
+
+_MAX_RECENT = 5
+_SETTINGS_ORG = "MvuEjsLinter"
 
 
 class MainWindow(QMainWindow):
@@ -31,12 +37,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.controller = AppController()
         self.worker: ScanWorker | None = None
+        self.settings = QSettings(_SETTINGS_ORG, _SETTINGS_ORG)
 
         self.setWindowTitle("MVU + EJS 智能检查工具")
         self.resize(1240, 780)
 
         self._build_ui()
         self._connect_actions()
+        self._refresh_recent_menu()
         self.statusBar().showMessage("就绪 — 拖入角色卡 ZIP 开始")
 
     # ── UI construction ───────────────────────────────────────────
@@ -49,6 +57,23 @@ class MainWindow(QMainWindow):
         self.action_quit = QAction("退出", self)
         self.action_quit.setShortcut("Ctrl+Q")
         file_menu.addAction(self.action_open)
+
+        # Recent files submenu
+        self.recent_menu = QMenu("最近打开", self)
+        file_menu.addMenu(self.recent_menu)
+
+        file_menu.addSeparator()
+
+        # Export submenu
+        export_menu = QMenu("导出报告", self)
+        self.action_export_html = QAction("导出 HTML…", self)
+        self.action_export_csv = QAction("导出 CSV…", self)
+        self.action_export_md = QAction("导出 Markdown…", self)
+        export_menu.addAction(self.action_export_html)
+        export_menu.addAction(self.action_export_csv)
+        export_menu.addAction(self.action_export_md)
+        file_menu.addMenu(export_menu)
+
         file_menu.addSeparator()
         file_menu.addAction(self.action_quit)
 
@@ -128,8 +153,12 @@ class MainWindow(QMainWindow):
         self.action_scan.triggered.connect(self._start_scan)
         self.action_clear.triggered.connect(self._clear_report)
         self.action_about.triggered.connect(self._show_about)
+        self.action_export_html.triggered.connect(lambda: self._export_report("html"))
+        self.action_export_csv.triggered.connect(lambda: self._export_report("csv"))
+        self.action_export_md.triggered.connect(lambda: self._export_report("md"))
         self.drop_zone.file_selected.connect(self.import_zip)
         self.scan_button.clicked.connect(self._start_scan)
+        self.report_panel.status_changed.connect(self._on_status_changed)
 
     # ── Import ────────────────────────────────────────────────────
 
@@ -179,6 +208,7 @@ class MainWindow(QMainWindow):
         self.report_panel.clear()
         self.scan_summary_label.setText("—")
         self.scan_button.setEnabled(True)
+        self._record_recent(zip_path)
         self.statusBar().showMessage(f"导入完成: {Path(zip_path).name} — 点击「开始静态检查」")
 
     # ── Scan ──────────────────────────────────────────────────────
@@ -267,6 +297,81 @@ class MainWindow(QMainWindow):
             "• SQLite 持久化错误报告\n\n"
             "技术栈: PySide6 + SQLite + llama-cpp-python(可选)",
         )
+
+    # ── Export / recent files / status ──────────────────────────
+
+    def _export_report(self, fmt: str):
+        errors = self.controller.get_errors()
+        if not errors:
+            QMessageBox.information(self, "导出报告", "当前没有可导出的检查结果。")
+            return
+
+        from PySide6.QtWidgets import QFileDialog
+
+        exts = {
+            "html": "HTML 文件 (*.html)",
+            "csv": "CSV 文件 (*.csv)",
+            "md": "Markdown 文件 (*.md)",
+        }
+        default_name = f"检查报告_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
+        path, _ = QFileDialog.getSaveFileName(self, "导出报告", default_name, exts[fmt])
+        if not path:
+            return
+
+        project = self.controller.project
+        try:
+            if fmt == "html":
+                export_html(
+                    errors, path,
+                    project_name=Path(project.source).name if project else "",
+                    schema_form=project.schema_form if project else "",
+                    degraded=self.controller.schema_info is None,
+                    counts=self.controller.get_counts(),
+                )
+            elif fmt == "csv":
+                export_csv(errors, path)
+            else:
+                export_markdown(errors, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"无法写入报告:\n{exc}")
+            return
+        self.statusBar().showMessage(f"报告已导出: {Path(path).name}")
+
+    def _on_status_changed(self, error_id: str, status: str):
+        if self.controller.set_error_status(error_id, status):
+            self.report_panel.update_status(error_id, status)
+            self.statusBar().showMessage(f"{error_id} 已标记为 {status}")
+
+    def _record_recent(self, zip_path: str):
+        key = str(Path(zip_path).resolve())
+        recents = list(self.settings.value("recent_files", [], type=list) or [])
+        recents = [p for p in recents if p != key]
+        recents.insert(0, key)
+        self.settings.setValue("recent_files", recents[:_MAX_RECENT])
+        self._refresh_recent_menu()
+
+    def _refresh_recent_menu(self):
+        self.recent_menu.clear()
+        recents = list(self.settings.value("recent_files", [], type=list) or [])
+        recents = [p for p in recents if Path(p).exists()]
+        if not recents:
+            empty = QAction("（暂无）", self)
+            empty.setEnabled(False)
+            self.recent_menu.addAction(empty)
+            return
+        for p in recents:
+            action = QAction(Path(p).name, self)
+            action.setToolTip(p)
+            action.triggered.connect(lambda checked=False, path=p: self.import_zip(path))
+            self.recent_menu.addAction(action)
+        self.recent_menu.addSeparator()
+        clear_action = QAction("清空列表", self)
+        clear_action.triggered.connect(self._clear_recent)
+        self.recent_menu.addAction(clear_action)
+
+    def _clear_recent(self):
+        self.settings.remove("recent_files")
+        self._refresh_recent_menu()
 
     # ── Lifecycle ─────────────────────────────────────────────────
 

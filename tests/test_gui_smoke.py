@@ -112,3 +112,53 @@ def test_controller_gui_integration(app, card_zip):
     panel.show_errors(controller.get_errors(), counts=controller.get_counts())
     assert panel.table.rowCount() == summary.errors_inserted == 2
     controller.close()
+
+
+def test_report_panel_status_update(app):
+    errors = [
+        {"level": "Lv.2", "error_id": "EJS-0001", "category": "EJS",
+         "file_path": "a.html", "line_number": 1, "path": None,
+         "message": "m", "suggestion": None, "status": "pending"},
+    ]
+    panel = ReportPanel()
+    panel.show_errors(errors, counts={"Lv.1": 0, "Lv.2": 1, "Lv.3": 0, "Lv.4": 0})
+    assert panel.table.item(0, 8).text() == "待处理"
+
+    panel.update_status("EJS-0001", "fixed")
+    assert panel.table.item(0, 8).text() == "已修复"
+
+    panel.update_status("EJS-0001", "ignored")
+    assert panel.table.item(0, 8).text() == "已忽略"
+
+
+def test_main_window_export_csv(app, card_zip, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    window = MainWindow()
+    window.import_zip(card_zip)
+    window.controller.run_static_check()
+
+    out = tmp_path / "report.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        lambda *a, **k: (str(out), "CSV 文件 (*.csv)"))
+    window._export_report("csv")
+
+    assert out.exists()
+    text = out.read_text(encoding="utf-8-sig")
+    assert "级别" in text and "EJS-0001" in text
+    window.close()
+
+
+def test_main_window_status_changed_roundtrip(app, card_zip):
+    window = MainWindow()
+    window.import_zip(card_zip)
+    window.controller.run_static_check()
+    window.report_panel.show_errors(
+        window.controller.get_errors(), counts=window.controller.get_counts()
+    )
+
+    first_id = window.controller.get_errors()[0]["error_id"]
+    window._on_status_changed(first_id, "fixed")
+    assert window.controller.get_errors()[0]["status"] == "fixed"
+    assert window.report_panel.table.item(0, 8).text() == "已修复"
+    window.close()

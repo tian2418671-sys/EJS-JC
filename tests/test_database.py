@@ -98,3 +98,14 @@ def test_clear_errors_empties_table(db):
     db.insert_check_result(_mk_result("EJS-0001"))
     db.clear_errors()
     assert db.get_all_errors() == []
+
+
+def test_set_error_status_updates_row(db):
+    db.insert_check_result(_mk_result("EJS-0001"))
+    assert db.set_error_status("EJS-0001", "fixed") is True
+    rows = db.get_errors()
+    assert rows[0]["status"] == "fixed"
+
+
+def test_set_error_status_missing_id_returns_false(db):
+    assert db.set_error_status("EJS-9999", "fixed") is False

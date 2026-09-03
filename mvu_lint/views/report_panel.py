@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QTableWidget,
     QTableWidgetItem,
@@ -27,9 +28,18 @@ _LEVEL_COLORS = {
 _HEADERS = ["级别", "ID", "类别", "文件", "行", "变量路径", "消息", "建议", "状态"]
 _LEVELS = ["全部", "Lv.1", "Lv.2", "Lv.3", "Lv.4"]
 
+_STATUS_LABELS = {
+    "pending": "待处理",
+    "fixed": "已修复",
+    "ignored": "已忽略",
+}
+
 
 class ReportPanel(QWidget):
     """Displays static_errors rows with a level filter combo."""
+
+    # Emitted when the user picks a new status from the context menu.
+    status_changed = Signal(str, str)  # (error_id, new_status)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,6 +72,8 @@ class ReportPanel(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setSortingEnabled(False)
         self.table.cellDoubleClicked.connect(self._show_detail)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -130,7 +142,7 @@ class ReportPanel(QWidget):
                 err.get("path") or "",
                 err.get("message", ""),
                 err.get("suggestion") or "",
-                err.get("status", ""),
+                _STATUS_LABELS.get(err.get("status", ""), err.get("status", "")),
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -166,3 +178,28 @@ class ReportPanel(QWidget):
             + (f"\n\n建议:\n{suggestion}" if suggestion else "")
         )
         QMessageBox.information(self, f"错误详情 — {error_id}", body)
+
+    # ── Status management (context menu) ────────────────────────
+
+    def _show_context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+        self.table.selectRow(row)
+        error_id = self.table.item(row, 1).text()
+
+        menu = QMenu(self)
+        for status, label in _STATUS_LABELS.items():
+            action = menu.addAction(f"标记为「{label}」")
+            action.triggered.connect(
+                lambda checked=False, s=status, eid=error_id: self.status_changed.emit(eid, s)
+            )
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def update_status(self, error_id: str, status: str):
+        """Update the in-memory status of one error and refresh the table."""
+        for err in self._all_errors:
+            if err.get("error_id") == error_id:
+                err["status"] = status
+                break
+        self._apply_filter()
