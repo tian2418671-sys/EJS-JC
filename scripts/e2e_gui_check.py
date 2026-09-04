@@ -1,6 +1,6 @@
 """End-to-end GUI pipeline check — runs the real ScanWorker in an event loop.
 
-Usage: python scripts/e2e_gui_check.py [角色卡.zip]
+Usage: python scripts/e2e_gui_check.py [角色卡.png|json]
 Exit code 0 → import + threaded scan + report refresh all succeeded.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from mvu_lint.views.main_window import MainWindow  # noqa: E402
 RESULTS = {}
 
 
-def run(zip_path: str) -> int:
+def run(card_path: str) -> int:
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     window.show()
@@ -40,9 +40,9 @@ def run(zip_path: str) -> int:
     QTimer.singleShot(10000, watchdog)
 
     def step_import():
-        print(f"[1/3] 导入 {Path(zip_path).name}…", flush=True)
+        print(f"[1/3] 导入 {Path(card_path).name}…", flush=True)
         try:
-            window.import_zip(zip_path)
+            window.import_card(card_path)
         except Exception:
             traceback.print_exc()
             app.exit(3)
@@ -86,5 +86,5 @@ def run(zip_path: str) -> int:
 
 
 if __name__ == "__main__":
-    zip_arg = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "test_card.zip")
-    raise SystemExit(run(zip_arg))
+    card_arg = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "test_card.json")
+    raise SystemExit(run(card_arg))

@@ -1,30 +1,42 @@
-"""Project scanner — ZIP extraction + directory recognition + file_index."""
+"""Project scanner — character card import + content-block file_index.
+
+The correct import format is a NPC role card (角色卡):
+  - PNG card: JSON embedded in the PNG ``tEXt chara`` chunk (base64)
+  - JSON card: plain ``.json`` chara_card_v2 / legacy card
+
+From the card we build a ``file_index`` of *content blocks* (worldbook
+entries, first_mes, regex scripts, depth prompt…) instead of extracting
+a ZIP archive to disk.
+"""
 from __future__ import annotations
 
 import hashlib
-import tempfile
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from .card_loader import CharacterCard, load_card
+
 
 @dataclass
 class FileEntry:
-    """A single file in the scanned project."""
-    file_path: str        # relative path
+    """A single content block in the scanned character card."""
+    file_path: str        # logical path (e.g. 世界书/entry_003)
     file_type: str        # worldbook / script / interface / schema
-    absolute_path: str
+    absolute_path: str    # source card path (for write-back)
+    content: str = ""     # in-memory text content
+    json_pointer: str = ""  # JSON pointer into the card dict
 
 
 @dataclass
 class ProjectInfo:
-    """Scanned project information."""
+    """Scanned character card information."""
     root_dir: str
-    source: str           # zip path or directory path
-    schema_path: Optional[str] = None    # absolute path to schema file
-    schema_form: str = ""  # "json" or "ts" or ""
+    source: str           # card path (.png / .json)
+    schema_path: Optional[str] = None    # unused for cards; kept for compat
+    schema_form: str = ""  # "json" / "ts" / ""
     files: List[FileEntry] = field(default_factory=list)
+    card: Optional[CharacterCard] = None
 
     def to_dict(self) -> dict:
         return {
@@ -40,113 +52,38 @@ class ProjectInfo:
         }
 
 
-# Directory name → file type mapping
-_DIR_TYPE_MAP = {
-    "世界书": "worldbook",
-    "worldbook": "worldbook",
-    "脚本": "script",
-    "script": "script",
-    "scripts": "script",
-    "界面": "interface",
-    "interface": "interface",
-    "ui": "interface",
-}
-
-
 class ProjectScanner:
-    """Scan ZIP archives and directories for MVU project structure."""
+    """Scan character cards (PNG/JSON) for MVU project structure."""
 
-    def scan_zip(self, zip_path: str, extract_dir: Optional[str] = None) -> ProjectInfo:
-        """Extract ZIP and scan the resulting directory."""
-        if extract_dir is None:
-            extract_dir = tempfile.mkdtemp(prefix="mvu_lint_")
+    def scan_card(self, card_path: str) -> ProjectInfo:
+        """Parse a character card and index its content blocks."""
+        card = load_card(card_path)
+        root = Path(card_path).parent
 
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(extract_dir)
-
-        return self.scan_directory(extract_dir, source=zip_path)
-
-    def scan_directory(self, dir_path: str, source: str = "") -> ProjectInfo:
-        """Scan a directory for project structure."""
-        root = Path(dir_path)
         files: List[FileEntry] = []
-        schema_path: Optional[str] = None
-        schema_form: str = ""
-
-        # Look for schema.json first, then schema.ts
-        for pattern in ("schema.json", "**/schema.json"):
-            matches = list(root.glob(pattern))
-            if matches:
-                schema_path = str(matches[0])
-                schema_form = "json"
-                break
-        if not schema_path:
-            for pattern in ("schema.ts", "**/schema.ts"):
-                matches = list(root.glob(pattern))
-                if matches:
-                    schema_path = str(matches[0])
-                    schema_form = "ts"
-                    break
-
-        # Scan all files
-        for p in sorted(root.rglob("*")):
-            if not p.is_file():
-                continue
-            # Skip common non-project files
-            if p.suffix.lower() in (".exe", ".dll", ".png", ".jpg", ".jpeg",
-                                     ".gif", ".ico", ".zip"):
-                continue
-
-            rel_path = str(p.relative_to(root)).replace("\\", "/")
-            file_type = self._classify_file(rel_path)
-            if file_type:
-                files.append(FileEntry(
-                    file_path=rel_path,
-                    file_type=file_type,
-                    absolute_path=str(p),
-                ))
+        for block in card.blocks:
+            files.append(FileEntry(
+                file_path=block.file_path,
+                file_type=block.file_type,
+                absolute_path=str(Path(card_path).resolve()),
+                content=block.content,
+                json_pointer=block.json_pointer,
+            ))
 
         return ProjectInfo(
             root_dir=str(root),
-            source=source,
-            schema_path=schema_path,
-            schema_form=schema_form,
+            source=str(Path(card_path).resolve()),
             files=files,
+            card=card,
         )
 
-    def _classify_file(self, rel_path: str) -> Optional[str]:
-        """Classify a file by its path and name.
-
-        Returns one of: schema, worldbook, script, interface
-        or None if the file should be skipped.
-        """
-        path = Path(rel_path)
-        name = path.name.lower()
-        parts = [p.lower() for p in path.parts]
-
-        # Schema files
-        if name in ("schema.json", "schema.ts"):
-            return "schema"
-
-        # Check directory-based classification
-        for part in parts:
-            if part in _DIR_TYPE_MAP:
-                return _DIR_TYPE_MAP[part]
-
-        # Extension-based classification for files not in known dirs
-        if name.endswith((".ejs", ".html", ".htm")):
-            return "interface"
-        if name.endswith((".js", ".ts", ".mjs")):
-            return "script"
-        if name.endswith(".json"):
-            # JSON files not in known dirs — treat as worldbook entries
-            return "worldbook"
-        if name.endswith((".txt", ".md")):
-            return "worldbook"
-
-        return None
+    def scan_directory(self, dir_path: str, source: str = "") -> ProjectInfo:
+        """Deprecated: legacy directory scan. Raises to guide users to cards."""
+        raise NotImplementedError(
+            "目录扫描已废弃 — 请导入角色卡文件（.png / .json）"
+        )
 
     @staticmethod
     def compute_hash(content: str) -> str:
-        """Compute MD5 hash of file content for incremental scanning."""
+        """Compute MD5 hash of content for incremental scanning."""
         return hashlib.md5(content.encode("utf-8")).hexdigest()

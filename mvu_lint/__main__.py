@@ -1,32 +1,36 @@
-"""CLI entry point: python -m mvu_lint scan <角色卡.zip>"""
+"""CLI entry point: python -m mvu_lint scan <角色卡.png|json>"""
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
 
+from .core.card_loader import extract_schema_dict, load_card
 from .core.ejs_parser import EJSParser
 from .core.project_scanner import ProjectScanner
 from .core.schema_loader import SchemaLoader
 from .models.check_result import ErrorLevel
 
 
-def run_scan(zip_path: str) -> dict:
-    """Run a full scan on a ZIP archive and return a JSON-serializable report."""
-    # 1. Scan ZIP
+def run_scan(card_path: str) -> dict:
+    """Run a full scan on a character card (PNG/JSON) and return a report."""
+    # 1. Load card + content blocks
     scanner = ProjectScanner()
-    project = scanner.scan_zip(zip_path)
+    project = scanner.scan_card(card_path)
+    card = project.card
 
-    # 2. Load schema if available
+    # 2. Load schema from the card's embedded variable initial values
     schema_info = None
-    if project.schema_path and project.schema_form == "json":
+    if card is not None:
         try:
-            loader = SchemaLoader()
-            schema_info = loader.load_from_json(project.schema_path)
-        except Exception as e:
+            data = extract_schema_dict(card)
+            if data:
+                loader = SchemaLoader()
+                schema_info = loader.load_from_dict(data, source=card_path)
+        except Exception:
             schema_info = None  # Schema parse failure is non-fatal
 
-    # 3. Run EJS checks on all non-schema files
+    # 3. Run EJS checks on all non-schema blocks
     parser = EJSParser()
     all_errors = []
     all_var_refs = []
@@ -35,13 +39,9 @@ def run_scan(zip_path: str) -> dict:
     for file_entry in project.files:
         if file_entry.file_type == "schema":
             continue
-        try:
-            with open(file_entry.absolute_path, "r", encoding="utf-8") as f:
-                content = f.read()
-        except (UnicodeDecodeError, OSError):
-            continue
+        content = file_entry.content
 
-        # Quick check: does this file contain EJS tags?
+        # Quick check: does this block contain EJS tags?
         if "<%" not in content:
             continue
 
@@ -53,6 +53,7 @@ def run_scan(zip_path: str) -> dict:
     # 4. Build report
     report = {
         "project": project.to_dict(),
+        "card": card.to_dict() if card else None,
         "schema": {
             "found": schema_info is not None,
             "form": schema_info.form if schema_info else None,
@@ -97,19 +98,23 @@ def run_scan(zip_path: str) -> dict:
 def main():
     """CLI main entry point."""
     if len(sys.argv) < 2:
-        print("用法: python -m mvu_lint [scan <角色卡.zip> | gui]")
+        print("用法: python -m mvu_lint [scan <角色卡.png|json> | gui]")
         sys.exit(1)
 
     cmd = sys.argv[1]
     if cmd == "scan":
         if len(sys.argv) < 3:
-            print("用法: python -m mvu_lint scan <角色卡.zip>")
+            print("用法: python -m mvu_lint scan <角色卡.png|json>")
             sys.exit(1)
-        zip_path = sys.argv[2]
-        if not Path(zip_path).exists():
-            print(f"错误: 文件不存在: {zip_path}")
+        card_path = sys.argv[2]
+        if not Path(card_path).exists():
+            print(f"错误: 文件不存在: {card_path}")
             sys.exit(1)
-        report = run_scan(zip_path)
+        try:
+            report = run_scan(card_path)
+        except ValueError as exc:
+            print(f"错误: {exc}")
+            sys.exit(1)
         print(json.dumps(report, ensure_ascii=False, indent=2))
     elif cmd == "gui":
         try:

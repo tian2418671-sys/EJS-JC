@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import zipfile
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -25,24 +24,37 @@ def app():
 
 
 @pytest.fixture(scope="module")
-def card_zip(tmp_path_factory) -> str:
+def card_json(tmp_path_factory) -> str:
     tmp = tmp_path_factory.mktemp("gui")
-    zip_path = tmp / "card.zip"
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr(
-            "schema.json",
-            json.dumps({"$schema": "http://json-schema.org/draft-07/schema#",
-                        "type": "object",
-                        "properties": {"主角": {"type": "object", "properties": {
-                            "好感度": {"type": "number"}}}}}),
-        )
-        zf.writestr(
-            "世界书/entry.json",
-            json.dumps({"content": "喜欢：<%= mvu.get(\"主角.好感度\") %>"}),
-        )
-        zf.writestr("世界书/broken.html", "<p>未闭合：<%= stat_data.主角.好感度")
-        zf.writestr("世界书/unsafe.html", "<p><%- data.备注 %></p>")
-    return str(zip_path)
+    card = {
+        "spec": "chara_card_v2",
+        "spec_version": "2.0",
+        "name": "测试角色卡",
+        "data": {
+            "name": "测试角色卡",
+            "first_mes": "你好",
+            "extensions": {},
+            "character_book": {"name": "世界书", "entries": [
+                {"id": "e1", "comment": "条目一",
+                 "content": "喜欢：<%= mvu.get(\"主角.好感度\") %>", "enabled": True},
+                {"id": "e2", "comment": "未闭合标签",
+                 "content": "<p>未闭合：<%= stat_data.主角.好感度", "enabled": True},
+                {"id": "e3", "comment": "未转义输出",
+                 "content": "<p><%- data.备注 %></p>", "enabled": True},
+                {"id": "e4", "comment": "变量初始值",
+                 "content": (
+                     "# 变量初始值（由 mvu 在开始时读取）\n"
+                     "主角:\n"
+                     "  好感度: 0\n"
+                     "  姓名: 测试\n"
+                 ),
+                 "enabled": True},
+            ]},
+        },
+    }
+    path = tmp / "card.json"
+    path.write_text(json.dumps(card, ensure_ascii=False), encoding="utf-8")
+    return str(path)
 
 
 def test_main_window_constructs(app, qtbot=None):
@@ -54,21 +66,27 @@ def test_main_window_constructs(app, qtbot=None):
     window.close()
 
 
-def test_import_zip_updates_info(app, card_zip):
+def test_import_card_updates_info(app, card_json):
     window = MainWindow()
-    window.import_zip(card_zip)
-    assert "文件数: 4" in window.info_folder_label.text()
-    assert "schema.json 解析成功" in window.schema_status_label.text()
+    window.import_card(card_json)
+    assert "检查块数: 5" in window.info_folder_label.text()  # 4 worldbook + first_mes
+    assert "变量初始值" in window.schema_status_label.text()  # data_shape loaded from initvar block
     assert window.scan_button.isEnabled() is True
     window.close()
 
 
-def test_import_zip_without_schema_shows_degraded(app, tmp_path):
-    zip_path = tmp_path / "noschema.zip"
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("世界书/a.html", "<%= stat_data.主角.好感度 %>")
+def test_import_card_without_initvar_shows_degraded(app, tmp_path):
+    card = {
+        "spec": "chara_card_v2", "spec_version": "2.0", "name": "无变量",
+        "data": {"name": "无变量", "extensions": {},
+                 "character_book": {"name": "wb", "entries": [
+                     {"id": "a", "comment": "条目",
+                      "content": "<%= stat_data.主角.好感度 %>", "enabled": True}]}},
+    }
+    path = tmp_path / "noschema.json"
+    path.write_text(json.dumps(card, ensure_ascii=False), encoding="utf-8")
     window = MainWindow()
-    window.import_zip(str(zip_path))
+    window.import_card(str(path))
     assert "降级" in window.schema_status_label.text()
     window.close()
 
@@ -76,13 +94,13 @@ def test_import_zip_without_schema_shows_degraded(app, tmp_path):
 def test_report_panel_fill_and_filter(app):
     errors = [
         {"level": "Lv.1", "error_id": "EJS-0001", "category": "EJS",
-         "file_path": "a.html", "line_number": 2, "path": None,
+         "file_path": "世界书/条目一", "line_number": 2, "path": None,
          "message": "m1", "suggestion": "s1", "status": "pending"},
         {"level": "Lv.1", "error_id": "EJS-0002", "category": "EJS",
-         "file_path": "b.html", "line_number": None, "path": None,
+         "file_path": "世界书/条目二", "line_number": None, "path": None,
          "message": "m2", "suggestion": None, "status": "pending"},
         {"level": "Lv.4", "error_id": "EJS-0003", "category": "EJS",
-         "file_path": "c.html", "line_number": 1, "path": "主角.备注",
+         "file_path": "世界书/条目三", "line_number": 1, "path": "主角.备注",
          "message": "m3", "suggestion": "s3", "status": "pending"},
     ]
     panel = ReportPanel()
@@ -102,10 +120,10 @@ def test_report_panel_fill_and_filter(app):
     assert panel.table.rowCount() == 0
 
 
-def test_controller_gui_integration(app, card_zip):
+def test_controller_gui_integration(app, card_json):
     """Controller pipeline drives the report panel end to end."""
     controller = AppController()
-    controller.import_zip(card_zip)
+    controller.import_card(card_json)
     summary = controller.run_static_check()
 
     panel = ReportPanel()
@@ -117,7 +135,7 @@ def test_controller_gui_integration(app, card_zip):
 def test_report_panel_status_update(app):
     errors = [
         {"level": "Lv.2", "error_id": "EJS-0001", "category": "EJS",
-         "file_path": "a.html", "line_number": 1, "path": None,
+         "file_path": "世界书/条目一", "line_number": 1, "path": None,
          "message": "m", "suggestion": None, "status": "pending"},
     ]
     panel = ReportPanel()
@@ -131,11 +149,11 @@ def test_report_panel_status_update(app):
     assert panel.table.item(0, 8).text() == "已忽略"
 
 
-def test_main_window_export_csv(app, card_zip, tmp_path, monkeypatch):
+def test_main_window_export_csv(app, card_json, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QFileDialog
 
     window = MainWindow()
-    window.import_zip(card_zip)
+    window.import_card(card_json)
     window.controller.run_static_check()
 
     out = tmp_path / "report.csv"
@@ -149,9 +167,9 @@ def test_main_window_export_csv(app, card_zip, tmp_path, monkeypatch):
     window.close()
 
 
-def test_main_window_status_changed_roundtrip(app, card_zip):
+def test_main_window_status_changed_roundtrip(app, card_json):
     window = MainWindow()
-    window.import_zip(card_zip)
+    window.import_card(card_json)
     window.controller.run_static_check()
     window.report_panel.show_errors(
         window.controller.get_errors(), counts=window.controller.get_counts()

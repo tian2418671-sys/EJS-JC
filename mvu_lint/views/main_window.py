@@ -45,14 +45,14 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_actions()
         self._refresh_recent_menu()
-        self.statusBar().showMessage("就绪 — 拖入角色卡 ZIP 开始")
+        self.statusBar().showMessage("就绪 — 拖入角色卡（.png / .json）开始")
 
     # ── UI construction ───────────────────────────────────────────
 
     def _build_ui(self):
         # Menus
         file_menu = self.menuBar().addMenu("文件(&F)")
-        self.action_open = QAction("打开 ZIP 角色卡…", self)
+        self.action_open = QAction("打开角色卡…", self)
         self.action_open.setShortcut("Ctrl+O")
         self.action_quit = QAction("退出", self)
         self.action_quit.setShortcut("Ctrl+Q")
@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.progress_bar)
 
     def _connect_actions(self):
-        self.action_open.triggered.connect(self._browse_zip)
+        self.action_open.triggered.connect(self._browse_card)
         self.action_quit.triggered.connect(self.close)
         self.action_scan.triggered.connect(self._start_scan)
         self.action_clear.triggered.connect(self._clear_report)
@@ -156,34 +156,34 @@ class MainWindow(QMainWindow):
         self.action_export_html.triggered.connect(lambda: self._export_report("html"))
         self.action_export_csv.triggered.connect(lambda: self._export_report("csv"))
         self.action_export_md.triggered.connect(lambda: self._export_report("md"))
-        self.drop_zone.file_selected.connect(self.import_zip)
+        self.drop_zone.file_selected.connect(self.import_card)
         self.scan_button.clicked.connect(self._start_scan)
         self.report_panel.status_changed.connect(self._on_status_changed)
 
     # ── Import ────────────────────────────────────────────────────
 
-    def _browse_zip(self):
+    def _browse_card(self):
         from PySide6.QtWidgets import QFileDialog
 
         path, _ = QFileDialog.getOpenFileName(
-            self, "打开角色卡 ZIP", "",
-            "ZIP 压缩包 (*.zip);;所有文件 (*.*)",
+            self, "打开角色卡", "",
+            "角色卡 (*.png *.json);;PNG 角色卡 (*.png);;JSON 角色卡 (*.json);;所有文件 (*.*)",
         )
         if path:
-            self.import_zip(path)
+            self.import_card(path)
 
-    def import_zip(self, zip_path: str):
+    def import_card(self, card_path: str):
         try:
-            self.statusBar().showMessage(f"正在导入: {Path(zip_path).name}…")
-            project = self.controller.import_zip(zip_path)
+            self.statusBar().showMessage(f"正在导入: {Path(card_path).name}…")
+            project = self.controller.import_card(card_path)
         except Exception as exc:
             QMessageBox.critical(self, "导入失败", f"无法导入角色卡:\n{exc}")
             self.statusBar().showMessage("导入失败")
             return
 
-        self.drop_zone.set_loaded(Path(zip_path).name)
+        self.drop_zone.set_loaded(Path(card_path).name)
         self.info_folder_label.setText(
-            f"文件数: {len(project.files)}　来源: {Path(zip_path).name}"
+            f"检查块数: {len(project.files)}　来源: {Path(card_path).name}"
         )
 
         schema_form = project.schema_form or "未找到"
@@ -192,13 +192,13 @@ class MainWindow(QMainWindow):
         if self.controller.schema_info is not None:
             self.schema_status_label.setObjectName("OkLabel")
             self.schema_status_label.setText(
-                f"✅ schema.json 解析成功（{len(self.controller.schema_info.paths)} 条路径）"
+                f"✅ 变量初始值解析成功（{len(self.controller.schema_info.paths)} 条路径）"
             )
         else:
             self.schema_status_label.setObjectName("WarningLabel")
             reason = self.controller.degraded_reason()
             self.schema_status_label.setText(
-                f"⚠️ 部分 MVU 检查已降级，建议执行 pnpm build 生成 schema.json"
+                f"⚠️ 部分 MVU 检查已降级，角色卡缺少「# 变量初始值」块"
                 + (f"\n{reason}" if reason else "")
             )
         # Object names need re-polishing to apply style changes
@@ -208,8 +208,8 @@ class MainWindow(QMainWindow):
         self.report_panel.clear()
         self.scan_summary_label.setText("—")
         self.scan_button.setEnabled(True)
-        self._record_recent(zip_path)
-        self.statusBar().showMessage(f"导入完成: {Path(zip_path).name} — 点击「开始静态检查」")
+        self._record_recent(card_path)
+        self.statusBar().showMessage(f"导入完成: {Path(card_path).name} — 点击「开始静态检查」")
 
     # ── Scan ──────────────────────────────────────────────────────
 
@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
             "MVU + EJS 智能代码检查工具\n\n"
             "版本: v0.1 (Phase 1)\n\n"
             "功能:\n"
-            "• 导入角色卡 ZIP 并建立文件索引\n"
+            "• 导入角色卡（PNG/JSON）并建立检查块索引\n"
             "• 纯 Python EJS 静态检查（Lv.1–Lv.4）\n"
             "• SQLite 持久化错误报告\n\n"
             "技术栈: PySide6 + SQLite + llama-cpp-python(可选)",
@@ -342,8 +342,8 @@ class MainWindow(QMainWindow):
             self.report_panel.update_status(error_id, status)
             self.statusBar().showMessage(f"{error_id} 已标记为 {status}")
 
-    def _record_recent(self, zip_path: str):
-        key = str(Path(zip_path).resolve())
+    def _record_recent(self, card_path: str):
+        key = str(Path(card_path).resolve())
         recents = list(self.settings.value("recent_files", [], type=list) or [])
         recents = [p for p in recents if p != key]
         recents.insert(0, key)
@@ -362,7 +362,7 @@ class MainWindow(QMainWindow):
         for p in recents:
             action = QAction(Path(p).name, self)
             action.setToolTip(p)
-            action.triggered.connect(lambda checked=False, path=p: self.import_zip(path))
+            action.triggered.connect(lambda checked=False, path=p: self.import_card(path))
             self.recent_menu.addAction(action)
         self.recent_menu.addSeparator()
         clear_action = QAction("清空列表", self)
