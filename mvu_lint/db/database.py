@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS static_errors (
 
 CREATE TABLE IF NOT EXISTS simulation_rounds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    round_number INTEGER,
+    round_number INTEGER NOT NULL,
     user_input TEXT,
     ai_raw_output TEXT,
     parsed_commands TEXT,
@@ -43,9 +43,25 @@ CREATE TABLE IF NOT EXISTS simulation_rounds (
 
 CREATE TABLE IF NOT EXISTS state_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    round_id INTEGER,
+    round_id INTEGER NOT NULL,
     stat_data TEXT,
     changed_paths TEXT,
+    FOREIGN KEY (round_id) REFERENCES simulation_rounds(id)
+);
+
+CREATE TABLE IF NOT EXISTS simulation_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_id INTEGER NOT NULL,
+    file_path TEXT,
+    command_type TEXT,
+    path TEXT,
+    op TEXT,
+    value TEXT,
+    before_value TEXT,
+    after_value TEXT,
+    status TEXT,
+    error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (round_id) REFERENCES simulation_rounds(id)
 );
 
@@ -66,8 +82,6 @@ CREATE TABLE IF NOT EXISTS file_index (
     last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
-
-
 class DatabaseManager:
     """Manage SQLite database connections and provide query interface."""
 
@@ -209,6 +223,98 @@ class DatabaseManager:
         )
         self.conn.commit()
         return cur.rowcount > 0
+
+    # ── simulation rounds / snapshots / logs ────────────────────────
+
+    def insert_simulation_round(
+        self,
+        round_number: int,
+        user_input: str = "",
+        ai_raw_output: str = "",
+        parsed_commands: Optional[str] = None,
+        ejs_rendered: str = "",
+        errors: Optional[str] = None,
+        warnings: Optional[str] = None,
+    ) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO simulation_rounds "
+            "(round_number, user_input, ai_raw_output, parsed_commands, "
+            " ejs_rendered, errors, warnings) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                round_number,
+                user_input,
+                ai_raw_output,
+                parsed_commands,
+                ejs_rendered,
+                errors,
+                warnings,
+            ),
+        )
+        self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def insert_state_snapshot(
+        self,
+        round_id: int,
+        stat_data: str,
+        changed_paths: str,
+    ) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO state_snapshots (round_id, stat_data, changed_paths) "
+            "VALUES (?, ?, ?)",
+            (round_id, stat_data, changed_paths),
+        )
+        self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def insert_simulation_log(self, round_id: int, file_path: str,
+                              command_type: str, path: str, op: str,
+                              value: str, before_value: str, after_value: str,
+                              status: str, error: str = "") -> int:
+        cur = self.conn.execute(
+            "INSERT INTO simulation_logs "
+            "(round_id, file_path, command_type, path, op, value, "
+            " before_value, after_value, status, error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (round_id, file_path, command_type, path, op, value,
+             before_value, after_value, status, error),
+        )
+        self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def get_simulation_rounds(self) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM simulation_rounds ORDER BY round_number"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_state_snapshots(self, round_id: Optional[int] = None) -> List[dict]:
+        sql = "SELECT * FROM state_snapshots"
+        params: list = []
+        if round_id is not None:
+            sql += " WHERE round_id = ?"
+            params.append(round_id)
+        sql += " ORDER BY id"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_simulation_logs(self, round_id: Optional[int] = None) -> List[dict]:
+        sql = "SELECT * FROM simulation_logs"
+        params: list = []
+        if round_id is not None:
+            sql += " WHERE round_id = ?"
+            params.append(round_id)
+        sql += " ORDER BY id"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_simulation(self):
+        """Remove all simulation data (rounds, snapshots, logs)."""
+        self.conn.execute("DELETE FROM simulation_logs")
+        self.conn.execute("DELETE FROM state_snapshots")
+        self.conn.execute("DELETE FROM simulation_rounds")
+        self.conn.commit()
 
     # ── schema_cache ────────────────────────────────────────────────
 

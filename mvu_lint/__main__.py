@@ -98,7 +98,7 @@ def run_scan(card_path: str) -> dict:
 def main():
     """CLI main entry point."""
     if len(sys.argv) < 2:
-        print("用法: python -m mvu_lint [scan <角色卡.png|json> | gui]")
+        print("用法: python -m mvu_lint [scan <角色卡.png|json> | simulate <角色卡.png|json> [--input 文本 ...] | gui]")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -116,6 +116,35 @@ def main():
             print(f"错误: {exc}")
             sys.exit(1)
         print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif cmd == "simulate":
+        if len(sys.argv) < 3:
+            print("用法: python -m mvu_lint simulate <角色卡.png|json> [--input 文本 ...]")
+            sys.exit(1)
+        card_path = sys.argv[2]
+        if not Path(card_path).exists():
+            print(f"错误: 文件不存在: {card_path}")
+            sys.exit(1)
+        inputs: list[str] = []
+        i = 3
+        while i < len(sys.argv):
+            if sys.argv[i] == "--input" and i + 1 < len(sys.argv):
+                inputs.append(sys.argv[i + 1])
+                i += 2
+            else:
+                i += 1
+        from .controllers.app_controller import AppController
+        controller = AppController()
+        controller.import_card(card_path)
+        results = controller.run_simulation(user_inputs=inputs, max_steps=20)
+        for r in results:
+            print(f"\n[回合 {r.round_number}] 输入: {r.user_input or '<无>'}")
+            print(f"  激活条目: {len(r.activated_entries)}")
+            print(f"  命令: {len(r.commands)}  变更: {len(r.changed_paths)}")
+            if r.changed_paths:
+                print(f"  变更路径: {', '.join(r.changed_paths)}")
+            if r.errors:
+                print(f"  错误: {r.errors}")
+        controller.close()
     elif cmd == "gui":
         try:
             from .app import main as gui_main
@@ -125,7 +154,7 @@ def main():
         sys.exit(gui_main())
     else:
         print(f"未知命令: {cmd}")
-        print("可用命令: scan, gui")
+        print("可用命令: scan, simulate, gui")
         sys.exit(1)
 
 

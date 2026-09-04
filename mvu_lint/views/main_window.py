@@ -25,6 +25,7 @@ from ..controllers.scan_worker import ScanWorker
 from ..utils.report_exporter import export_csv, export_html, export_markdown
 from .drop_zone import DropZone
 from .report_panel import ReportPanel
+from .simulation_dialog import SimulationDialog
 
 _MAX_RECENT = 5
 _SETTINGS_ORG = "MvuEjsLinter"
@@ -125,6 +126,12 @@ class MainWindow(QMainWindow):
         self.scan_button.setObjectName("PrimaryButton")
         self.scan_button.setEnabled(False)
         left_layout.addWidget(self.scan_button)
+
+        self.simulate_button = QPushButton("运行模拟（技术验证）")
+        self.simulate_button.setEnabled(False)
+        self.simulate_button.clicked.connect(self._on_simulate)
+        left_layout.addWidget(self.simulate_button)
+
         left_layout.addStretch(1)
 
         # Right pane: report
@@ -158,6 +165,7 @@ class MainWindow(QMainWindow):
         self.action_export_md.triggered.connect(lambda: self._export_report("md"))
         self.drop_zone.file_selected.connect(self.import_card)
         self.scan_button.clicked.connect(self._start_scan)
+        self.simulate_button.clicked.connect(self._on_simulate)
         self.report_panel.status_changed.connect(self._on_status_changed)
 
     # ── Import ────────────────────────────────────────────────────
@@ -179,6 +187,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "导入失败", f"无法导入角色卡:\n{exc}")
             self.statusBar().showMessage("导入失败")
+            self.simulate_button.setEnabled(False)
             return
 
         self.drop_zone.set_loaded(Path(card_path).name)
@@ -208,6 +217,7 @@ class MainWindow(QMainWindow):
         self.report_panel.clear()
         self.scan_summary_label.setText("—")
         self.scan_button.setEnabled(True)
+        self.simulate_button.setEnabled(True)
         self._record_recent(card_path)
         self.statusBar().showMessage(f"导入完成: {Path(card_path).name} — 点击「开始静态检查」")
 
@@ -271,6 +281,13 @@ class MainWindow(QMainWindow):
         self._scan_finished_common()
         QMessageBox.critical(self, "检查失败", message)
         self.statusBar().showMessage("检查失败")
+
+    def _on_simulate(self):
+        if not self.controller.has_project():
+            QMessageBox.warning(self, "未导入项目", "请先导入角色卡。")
+            return
+        dialog = SimulationDialog(self.controller, parent=self)
+        dialog.exec()
 
     def _scan_finished_common(self):
         self.scan_button.setEnabled(True)

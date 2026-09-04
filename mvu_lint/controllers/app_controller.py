@@ -9,6 +9,7 @@ ZIP archives are NOT a valid import format for this tool.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -20,6 +21,7 @@ from ..core.card_loader import (
 from ..core.ejs_parser import EJSParser
 from ..core.project_scanner import ProjectInfo, ProjectScanner
 from ..core.schema_loader import SchemaLoader
+from ..core.simulation_engine import SimulationEngine, StepResult
 from ..core.static_checker import StaticChecker
 from ..core.auto_fixer import AutoFixer
 from ..db.database import DatabaseManager
@@ -225,6 +227,85 @@ class AppController:
     def set_error_status(self, error_id: str, status: str) -> bool:
         """Update one error's status and return whether it matched a row."""
         return self.db.set_error_status(error_id, status)
+
+    # ── Simulation (Phase 3 / F4-F5) ──────────────────────────────
+
+    def run_simulation(self, user_inputs: Optional[List[str]] = None,
+                       max_steps: int = 20,
+                       progress_cb: Optional[Callable[[int, int], None]] = None
+                       ) -> List[StepResult]:
+        """Run the rule-driven simulation and persist rounds/snapshots/logs."""
+        if not self.project or not self.project.card:
+            raise RuntimeError("尚未导入任何项目（先导入 PNG/JSON 角色卡）")
+
+        # Build simulation entries from worldbook content blocks.
+        entries: List[dict] = []
+        for entry in self.project.files:
+            entries.append({
+                "file_path": entry.file_path,
+                "content": entry.content or "",
+            })
+
+        initvar = extract_schema_dict(self.project.card)
+        engine = SimulationEngine(entries, initvar)
+
+        inputs = list(user_inputs or [])
+        results: List[StepResult] = []
+
+        for step_i in range(max_steps):
+            ui = inputs.pop(0) if inputs else ""
+            result = engine.step(ui)
+            results.append(result)
+
+            parsed = json.dumps(
+                [c.to_dict() for c in result.commands], ensure_ascii=False
+            )
+            round_id = self.db.insert_simulation_round(
+                round_number=result.round_number,
+                user_input=result.user_input,
+                ai_raw_output="",
+                parsed_commands=parsed,
+                ejs_rendered="",
+                errors=json.dumps(result.errors, ensure_ascii=False),
+                warnings=json.dumps(result.warnings, ensure_ascii=False),
+            )
+            self.db.insert_state_snapshot(
+                round_id=round_id,
+                stat_data=json.dumps(result.snapshot, ensure_ascii=False),
+                changed_paths=json.dumps(result.changed_paths, ensure_ascii=False),
+            )
+            for cmd in result.commands:
+                self.db.insert_simulation_log(
+                    round_id=round_id,
+                    file_path=cmd.file_path,
+                    command_type=cmd.command_type,
+                    path=cmd.path,
+                    op=cmd.op,
+                    value=json.dumps(cmd.value, ensure_ascii=False),
+                    before_value=json.dumps(cmd.before, ensure_ascii=False),
+                    after_value=json.dumps(cmd.after, ensure_ascii=False),
+                    status=cmd.status,
+                    error=cmd.error,
+                )
+
+            if progress_cb:
+                progress_cb(step_i + 1, max_steps)
+            if not result.changed_paths and not inputs:
+                break
+
+        return results
+
+    def get_simulation_rounds(self) -> List[dict]:
+        return self.db.get_simulation_rounds()
+
+    def get_state_snapshots(self, round_id: Optional[int] = None) -> List[dict]:
+        return self.db.get_state_snapshots(round_id=round_id)
+
+    def get_simulation_logs(self, round_id: Optional[int] = None) -> List[dict]:
+        return self.db.get_simulation_logs(round_id=round_id)
+
+    def clear_simulation(self):
+        self.db.clear_simulation()
 
     # ── Auto-fix ────────────────────────────────────────────────────
 
