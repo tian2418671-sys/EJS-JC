@@ -24,8 +24,10 @@ from ..controllers.app_controller import AppController, ScanSummary
 from ..controllers.scan_worker import ScanWorker
 from ..utils.report_exporter import export_csv, export_html, export_markdown
 from .drop_zone import DropZone
+from .dynamic_report_dialog import DynamicFindingsDialog
 from .report_panel import ReportPanel
 from .simulation_dialog import SimulationDialog
+from .time_travel_dialog import TimeTravelDialog
 
 _MAX_RECENT = 5
 _SETTINGS_ORG = "MvuEjsLinter"
@@ -132,6 +134,18 @@ class MainWindow(QMainWindow):
         self.simulate_button.clicked.connect(self._on_simulate)
         left_layout.addWidget(self.simulate_button)
 
+        self.timetravel_button = QPushButton("时间旅行 — 快照回放")
+        self.timetravel_button.setEnabled(False)
+        self.timetravel_button.setToolTip("滑块按步回退/前进，查看任意步骤变量状态")
+        self.timetravel_button.clicked.connect(self._on_time_travel)
+        left_layout.addWidget(self.timetravel_button)
+
+        self.dynamic_button = QPushButton("动态定位（基于日志 + 快照）")
+        self.dynamic_button.setEnabled(False)
+        self.dynamic_button.setToolTip("结合模拟日志与快照 diff 定位变量异常变更点")
+        self.dynamic_button.clicked.connect(self._on_dynamic)
+        left_layout.addWidget(self.dynamic_button)
+
         left_layout.addStretch(1)
 
         # Right pane: report
@@ -166,6 +180,8 @@ class MainWindow(QMainWindow):
         self.drop_zone.file_selected.connect(self.import_card)
         self.scan_button.clicked.connect(self._start_scan)
         self.simulate_button.clicked.connect(self._on_simulate)
+        self.timetravel_button.clicked.connect(self._on_time_travel)
+        self.dynamic_button.clicked.connect(self._on_dynamic)
         self.report_panel.status_changed.connect(self._on_status_changed)
 
     # ── Import ────────────────────────────────────────────────────
@@ -188,6 +204,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "导入失败", f"无法导入角色卡:\n{exc}")
             self.statusBar().showMessage("导入失败")
             self.simulate_button.setEnabled(False)
+            self.timetravel_button.setEnabled(False)
+            self.dynamic_button.setEnabled(False)
             return
 
         self.drop_zone.set_loaded(Path(card_path).name)
@@ -218,6 +236,8 @@ class MainWindow(QMainWindow):
         self.scan_summary_label.setText("—")
         self.scan_button.setEnabled(True)
         self.simulate_button.setEnabled(True)
+        self.timetravel_button.setEnabled(False)
+        self.dynamic_button.setEnabled(False)
         self._record_recent(card_path)
         self.statusBar().showMessage(f"导入完成: {Path(card_path).name} — 点击「开始静态检查」")
 
@@ -288,6 +308,37 @@ class MainWindow(QMainWindow):
             return
         dialog = SimulationDialog(self.controller, parent=self)
         dialog.exec()
+        # After a simulation run, time-travel + dynamic analysis become useful.
+        self.timetravel_button.setEnabled(True)
+        self.dynamic_button.setEnabled(True)
+
+    def _on_time_travel(self):
+        if not self.controller.get_simulation_rounds():
+            QMessageBox.information(
+                self, "时间旅行", "请先运行一次模拟（「运行模拟」按钮），再回放快照。"
+            )
+            return
+        dialog = TimeTravelDialog(self.controller, parent=self)
+        dialog.exec()
+
+    def _on_dynamic(self):
+        if not self.controller.get_simulation_rounds():
+            QMessageBox.information(
+                self, "动态定位", "请先运行一次模拟，动态定位需要模拟日志与快照数据。"
+            )
+            return
+        findings = self.controller.run_dynamic_analysis()
+        dialog = DynamicFindingsDialog(
+            self.controller, findings=findings, parent=self
+        )
+        dialog.status_changed.connect(self._on_dynamic_status_changed)
+        dialog.exec()
+
+    def _on_dynamic_status_changed(self, finding_id: str, status: str):
+        if not finding_id:
+            return
+        if self.controller.set_dynamic_status(finding_id, status):
+            self.statusBar().showMessage(f"{finding_id} 已标记为 {status}")
 
     def _scan_finished_common(self):
         self.scan_button.setEnabled(True)
@@ -307,10 +358,13 @@ class MainWindow(QMainWindow):
             self,
             "关于 MVU + EJS 智能检查工具",
             "MVU + EJS 智能代码检查工具\n\n"
-            "版本: v0.1 (Phase 1)\n\n"
+            "版本: v0.4 (Phase 4)\n\n"
             "功能:\n"
             "• 导入角色卡（PNG/JSON）并建立检查块索引\n"
             "• 纯 Python EJS 静态检查（Lv.1–Lv.4）\n"
+            "• MVU 命令 / JSON Patch / schema 联动 / 自动修复\n"
+            "• 规则驱动模拟对话（技术验证）\n"
+            "• 时间旅行快照回放 + 动态定位器\n"
             "• SQLite 持久化错误报告\n\n"
             "技术栈: PySide6 + SQLite + llama-cpp-python(可选)",
         )

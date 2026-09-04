@@ -180,3 +180,55 @@ def test_main_window_status_changed_roundtrip(app, card_json):
     assert window.controller.get_errors()[0]["status"] == "fixed"
     assert window.report_panel.table.item(0, 8).text() == "已修复"
     window.close()
+
+
+# ── Phase 4: time travel + dynamic findings dialogs ──────────────────
+
+def test_time_travel_dialog_constructs_and_steps(app, card_json):
+    """Slider replay renders initial state and per-round snapshots."""
+    from mvu_lint.views.time_travel_dialog import TimeTravelDialog
+
+    controller = AppController()
+    controller.import_card(card_json)
+    controller.run_simulation(max_steps=3)
+
+    dialog = TimeTravelDialog(controller)
+    assert dialog.slider.maximum() >= 1  # initial state + at least one round
+    assert dialog.var_table.rowCount() > 0
+    assert "初始状态" in dialog.step_label.text()
+
+    # step to the next snapshot
+    dialog.slider.setValue(1)
+    assert "第 1 轮后" in dialog.step_label.text() or "第 2 轮后" in dialog.step_label.text()
+    assert dialog.var_table.rowCount() > 0
+    dialog.close()
+    controller.close()
+
+
+def test_time_travel_dialog_no_simulation(app, card_json):
+    from mvu_lint.views.time_travel_dialog import TimeTravelDialog
+
+    controller = AppController()
+    controller.import_card(card_json)
+    dialog = TimeTravelDialog(controller)
+    # No simulation yet: only the initial state step exists.
+    assert dialog.slider.maximum() == 0
+    assert dialog.var_table.rowCount() > 0
+    dialog.close()
+    controller.close()
+
+
+def test_dynamic_findings_dialog_constructs(app, card_json):
+    from mvu_lint.views.dynamic_report_dialog import DynamicFindingsDialog
+
+    controller = AppController()
+    controller.import_card(card_json)
+    controller.run_simulation(max_steps=3)
+    findings = controller.run_dynamic_analysis()
+
+    dialog = DynamicFindingsDialog(controller, findings=findings)
+    assert dialog.table.rowCount() == len(findings)
+    if findings:
+        assert dialog.table.item(0, 1).text().startswith("DYN-")
+    dialog.close()
+    controller.close()

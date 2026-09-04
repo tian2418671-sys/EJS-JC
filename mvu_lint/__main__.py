@@ -98,7 +98,7 @@ def run_scan(card_path: str) -> dict:
 def main():
     """CLI main entry point."""
     if len(sys.argv) < 2:
-        print("用法: python -m mvu_lint [scan <角色卡.png|json> | simulate <角色卡.png|json> [--input 文本 ...] | gui]")
+        print("用法: python -m mvu_lint [scan <角色卡.png|json> | simulate <角色卡.png|json> [--input 文本 ...] | debug <角色卡.png|json> [--input 文本 ...] | gui]")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -145,6 +145,33 @@ def main():
             if r.errors:
                 print(f"  错误: {r.errors}")
         controller.close()
+    elif cmd == "debug":
+        if len(sys.argv) < 3:
+            print("用法: python -m mvu_lint debug <角色卡.png|json> [--input 文本 ...]")
+            sys.exit(1)
+        card_path = sys.argv[2]
+        if not Path(card_path).exists():
+            print(f"错误: 文件不存在: {card_path}")
+            sys.exit(1)
+        inputs: list[str] = []
+        i = 3
+        while i < len(sys.argv):
+            if sys.argv[i] == "--input" and i + 1 < len(sys.argv):
+                inputs.append(sys.argv[i + 1])
+                i += 2
+            else:
+                i += 1
+        from .controllers.app_controller import AppController
+        controller = AppController()
+        controller.import_card(card_path)
+        controller.run_simulation(user_inputs=inputs, max_steps=20)
+        findings = controller.run_dynamic_analysis()
+        print(json.dumps(
+            {"findings": findings,
+             "round_count": len(controller.get_simulation_rounds())},
+            ensure_ascii=False, indent=2,
+        ))
+        controller.close()
     elif cmd == "gui":
         try:
             from .app import main as gui_main
@@ -154,7 +181,7 @@ def main():
         sys.exit(gui_main())
     else:
         print(f"未知命令: {cmd}")
-        print("可用命令: scan, simulate, gui")
+        print("可用命令: scan, simulate, debug, gui")
         sys.exit(1)
 
 

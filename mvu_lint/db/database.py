@@ -65,6 +65,22 @@ CREATE TABLE IF NOT EXISTS simulation_logs (
     FOREIGN KEY (round_id) REFERENCES simulation_rounds(id)
 );
 
+CREATE TABLE IF NOT EXISTS dynamic_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id TEXT UNIQUE,
+    level TEXT,
+    category TEXT DEFAULT '动态',
+    file_path TEXT,
+    line_number INTEGER,
+    round_number INTEGER,
+    path TEXT,
+    message TEXT,
+    suggestion TEXT,
+    evidence TEXT,
+    status TEXT DEFAULT 'pending',
+    is_static INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS schema_cache (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT UNIQUE,
@@ -315,6 +331,64 @@ class DatabaseManager:
         self.conn.execute("DELETE FROM state_snapshots")
         self.conn.execute("DELETE FROM simulation_rounds")
         self.conn.commit()
+
+    # ── dynamic findings (Phase 4 / F6) ─────────────────────────────
+
+    def insert_dynamic_finding(self, finding: dict) -> str:
+        """Insert one dynamic-locator finding; returns its finding_id."""
+        finding_id = finding.get("error_id") or self.next_error_id("DYN")
+        while True:
+            try:
+                self.conn.execute(
+                    "INSERT INTO dynamic_findings "
+                    "(finding_id, level, category, file_path, line_number, "
+                    " round_number, path, message, suggestion, evidence, "
+                    " status, is_static) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        finding_id,
+                        finding.get("level", "Lv.3"),
+                        finding.get("category", "动态"),
+                        finding.get("file_path", ""),
+                        finding.get("line_number"),
+                        finding.get("round_number"),
+                        finding.get("path"),
+                        finding.get("message", ""),
+                        finding.get("suggestion"),
+                        finding.get("evidence", ""),
+                        finding.get("status", "pending"),
+                        int(finding.get("is_static", 0)),
+                    ),
+                )
+                self.conn.commit()
+                return finding_id
+            except sqlite3.IntegrityError:
+                finding_id = self.next_error_id("DYN")
+
+    def get_dynamic_findings(self, level: Optional[str] = None) -> List[dict]:
+        sql = ("SELECT finding_id AS error_id, level, category, file_path, "
+               "line_number, round_number, path, message, suggestion, "
+               "evidence, status, is_static "
+               "FROM dynamic_findings WHERE 1=1")
+        params: list = []
+        if level:
+            sql += " AND level = ?"
+            params.append(level)
+        sql += " ORDER BY COALESCE(round_number, 0), id"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_dynamic_findings(self):
+        self.conn.execute("DELETE FROM dynamic_findings")
+        self.conn.commit()
+
+    def set_dynamic_status(self, finding_id: str, status: str) -> bool:
+        cur = self.conn.execute(
+            "UPDATE dynamic_findings SET status = ? WHERE finding_id = ?",
+            (status, finding_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     # ── schema_cache ────────────────────────────────────────────────
 

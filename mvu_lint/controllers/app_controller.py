@@ -114,6 +114,10 @@ class AppController:
             return ""
         return self.schema_error or "未找到变量初始值定义"
 
+    def has_project(self) -> bool:
+        """Whether a character card has been imported."""
+        return self.project is not None and self.project.card is not None
+
     # ── Static check ──────────────────────────────────────────────
 
     def run_static_check(
@@ -306,6 +310,53 @@ class AppController:
 
     def clear_simulation(self):
         self.db.clear_simulation()
+
+    # ── Dynamic analysis (Phase 4 / F6) ─────────────────────────────
+
+    def run_dynamic_analysis(self) -> List[dict]:
+        """Run the dynamic locator over persisted simulation artifacts.
+
+        Reads rounds/snapshots/logs from the DB, runs the rule-based locator,
+        stores findings in ``dynamic_findings`` and returns them as dicts.
+        """
+        from ..core.debugger import DynamicLocator
+
+        rounds = self.db.get_simulation_rounds()
+        snapshots = self.db.get_state_snapshots()
+        logs = self.db.get_simulation_logs()
+        if not rounds:
+            return []
+
+        # Baseline for the first snapshot diff: the card's initvar block.
+        initial_state: Optional[dict] = None
+        if self.project and self.project.card is not None:
+            try:
+                initial_state = extract_schema_dict(self.project.card) or None
+            except Exception:
+                initial_state = None
+
+        self.db.clear_dynamic_findings()
+        locator = DynamicLocator()
+        findings = locator.analyze(
+            rounds, snapshots, logs, initial_state=initial_state
+        )
+
+        stored: List[dict] = []
+        for finding in findings:
+            finding_id = self.db.insert_dynamic_finding(finding.to_dict())
+            data = finding.to_dict()
+            data["error_id"] = finding_id
+            stored.append(data)
+        return stored
+
+    def get_dynamic_findings(self, level: Optional[str] = None) -> List[dict]:
+        return self.db.get_dynamic_findings(level=level)
+
+    def clear_dynamic_findings(self):
+        self.db.clear_dynamic_findings()
+
+    def set_dynamic_status(self, finding_id: str, status: str) -> bool:
+        return self.db.set_dynamic_status(finding_id, status)
 
     # ── Auto-fix ────────────────────────────────────────────────────
 
