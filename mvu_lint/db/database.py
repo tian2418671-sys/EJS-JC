@@ -240,6 +240,25 @@ class DatabaseManager:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def get_error(self, error_id: str) -> Optional[dict]:
+        """Return a single error row by error_id, or None if not found."""
+        row = self.conn.execute(
+            "SELECT * FROM static_errors WHERE error_id = ?", (error_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def set_error_explanation(self, error_id: str, explanation: str) -> bool:
+        """Persist an AI/template explanation onto an error row.
+
+        Returns True if exactly one row was affected.
+        """
+        cur = self.conn.execute(
+            "UPDATE static_errors SET ai_explanation = ? WHERE error_id = ?",
+            (explanation, error_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     # ── simulation rounds / snapshots / logs ────────────────────────
 
     def insert_simulation_round(

@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "mvu-lint"
-version = "0.1.0"
+version = "1.0.0"
 description = "MVU + EJS 智能代码检查工具"
 requires-python = ">=3.10"
 dependencies = [

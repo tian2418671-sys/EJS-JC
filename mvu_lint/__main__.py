@@ -95,10 +95,58 @@ def run_scan(card_path: str) -> dict:
     return report
 
 
+def _run_explain(args: list) -> None:
+    """Handle the ``explain`` subcommand: explain one or all static errors."""
+    from .controllers.app_controller import AppController
+
+    if not args:
+        print("用法: python -m mvu_lint explain <角色卡.png|json> [错误ID] [--all]")
+        sys.exit(1)
+
+    card_path = args[0]
+    if not Path(card_path).exists():
+        print(f"错误: 文件不存在: {card_path}")
+        sys.exit(1)
+
+    explain_all = "--all" in args[1:]
+    error_id = next((a for a in args[1:] if not a.startswith("--")), None)
+
+    controller = AppController()
+    try:
+        controller.import_card(card_path)
+        controller.run_static_check()
+        errors = controller.get_errors()
+        if not errors:
+            print("未发现静态检查错误，无需解释。")
+            return
+
+        if error_id is None and not explain_all:
+            print(f"共 {len(errors)} 条错误。请指定错误 ID 解释，或加 --all 解释全部：\n")
+            for e in errors:
+                print(f"  {e['error_id']:>10}  {e['level']:>5}  {e['message']}")
+            print("\n示例: python -m mvu_lint explain 角色卡.png EJS-0001")
+            return
+
+        targets = errors if explain_all else [e for e in errors
+                                              if e.get("error_id") == error_id]
+        if not targets:
+            print(f"错误: 未找到 ID 为 {error_id} 的错误。")
+            sys.exit(1)
+
+        results = []
+        for e in targets:
+            result = controller.explain_error(e["error_id"], use_llm=True, timeout=60)
+            if result is not None:
+                results.append(result)
+        print(json.dumps({"explanations": results}, ensure_ascii=False, indent=2))
+    finally:
+        controller.close()
+
+
 def main():
     """CLI main entry point."""
     if len(sys.argv) < 2:
-        print("用法: python -m mvu_lint [scan <角色卡.png|json> | simulate <角色卡.png|json> [--input 文本 ...] | debug <角色卡.png|json> [--input 文本 ...] | gui]")
+        print("用法: python -m mvu_lint [scan <角色卡.png|json> | simulate <角色卡.png|json> [--input 文本 ...] | debug <角色卡.png|json> [--input 文本 ...] | explain <角色卡.png|json> [错误ID] [--all] | gui]")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -172,6 +220,8 @@ def main():
             ensure_ascii=False, indent=2,
         ))
         controller.close()
+    elif cmd == "explain":
+        _run_explain(sys.argv[2:])
     elif cmd == "gui":
         try:
             from .app import main as gui_main

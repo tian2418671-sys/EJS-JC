@@ -64,6 +64,9 @@ class AppController:
         self.project: Optional[ProjectInfo] = None
         self.schema_info = None
         self.schema_error: Optional[str] = None
+        # Phase 5: lazy-initialized AI services (LLM + RAG knowledge base).
+        self._llm_service = None
+        self._rag_service = None
 
     # ── Project import ────────────────────────────────────────────
 
@@ -445,6 +448,44 @@ class AppController:
         entry.content = fixed
         self.db.set_error_status(error.get("error_id", ""), "fixed")
         return fixed
+
+    # ── AI explanation (Phase 5 / F7) ──────────────────────────────
+
+    def _llm(self):
+        if self._llm_service is None:
+            from ..core.llm_service import LLMService
+            self._llm_service = LLMService()
+        return self._llm_service
+
+    def _rag(self):
+        if self._rag_service is None:
+            from ..core.rag_service import RAGService
+            self._rag_service = RAGService()
+        return self._rag_service
+
+    def explain_error(self, error_id: str, use_llm: bool = True,
+                      timeout: Optional[float] = None) -> Optional[dict]:
+        """Generate and persist an explanation for one static error.
+
+        Returns a dict (``{error_id, explanation, source, model, chunks}``)
+        on success, or ``None`` if the error id is unknown.
+        """
+        error = self.db.get_error(error_id)
+        if error is None:
+            return None
+
+        from ..core.explanation_engine import ExplanationEngine
+        engine = ExplanationEngine(llm=self._llm(), rag=self._rag())
+        result = engine.explain(error, use_llm=use_llm, timeout=timeout)
+        self.db.set_error_explanation(error_id, result.explanation)
+        return result.to_dict()
+
+    def get_explanation(self, error_id: str) -> Optional[str]:
+        """Return the stored explanation text for an error, if any."""
+        error = self.db.get_error(error_id)
+        if error is None:
+            return None
+        return error.get("ai_explanation")
 
     # ── Lifecycle ─────────────────────────────────────────────────
 

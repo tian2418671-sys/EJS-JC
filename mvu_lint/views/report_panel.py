@@ -40,6 +40,8 @@ class ReportPanel(QWidget):
 
     # Emitted when the user picks a new status from the context menu.
     status_changed = Signal(str, str)  # (error_id, new_status)
+    # Emitted when the user requests an AI explanation from the context menu.
+    explanation_requested = Signal(str)  # error_id
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -189,6 +191,11 @@ class ReportPanel(QWidget):
         error_id = self.table.item(row, 1).text()
 
         menu = QMenu(self)
+        explain_action = menu.addAction("🤖 AI 解释")
+        explain_action.triggered.connect(
+            lambda checked=False, eid=error_id: self.explanation_requested.emit(eid)
+        )
+        menu.addSeparator()
         for status, label in _STATUS_LABELS.items():
             action = menu.addAction(f"标记为「{label}」")
             action.triggered.connect(

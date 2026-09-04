@@ -25,6 +25,7 @@ from ..controllers.scan_worker import ScanWorker
 from ..utils.report_exporter import export_csv, export_html, export_markdown
 from .drop_zone import DropZone
 from .dynamic_report_dialog import DynamicFindingsDialog
+from .explanation_dialog import ExplanationDialog
 from .report_panel import ReportPanel
 from .simulation_dialog import SimulationDialog
 from .time_travel_dialog import TimeTravelDialog
@@ -183,6 +184,7 @@ class MainWindow(QMainWindow):
         self.timetravel_button.clicked.connect(self._on_time_travel)
         self.dynamic_button.clicked.connect(self._on_dynamic)
         self.report_panel.status_changed.connect(self._on_status_changed)
+        self.report_panel.explanation_requested.connect(self._on_explain)
 
     # ── Import ────────────────────────────────────────────────────
 
@@ -358,14 +360,14 @@ class MainWindow(QMainWindow):
             self,
             "关于 MVU + EJS 智能检查工具",
             "MVU + EJS 智能代码检查工具\n\n"
-            "版本: v0.4 (Phase 4)\n\n"
+            "版本: v1.0 (Phase 5)\n\n"
             "功能:\n"
             "• 导入角色卡（PNG/JSON）并建立检查块索引\n"
             "• 纯 Python EJS 静态检查（Lv.1–Lv.4）\n"
             "• MVU 命令 / JSON Patch / schema 联动 / 自动修复\n"
             "• 规则驱动模拟对话（技术验证）\n"
             "• 时间旅行快照回放 + 动态定位器\n"
-            "• SQLite 持久化错误报告\n\n"
+            "• AI 错误解释（本地 LLM + RAG，无模型时降级为模板解释）\n\n"
             "技术栈: PySide6 + SQLite + llama-cpp-python(可选)",
         )
 
@@ -412,6 +414,18 @@ class MainWindow(QMainWindow):
         if self.controller.set_error_status(error_id, status):
             self.report_panel.update_status(error_id, status)
             self.statusBar().showMessage(f"{error_id} 已标记为 {status}")
+
+    def _on_explain(self, error_id: str):
+        error = None
+        for e in self.controller.get_errors():
+            if e.get("error_id") == error_id:
+                error = e
+                break
+        if error is None:
+            QMessageBox.warning(self, "AI 解释", "未找到该错误记录。")
+            return
+        dialog = ExplanationDialog(self.controller, error, parent=self)
+        dialog.exec()
 
     def _record_recent(self, card_path: str):
         key = str(Path(card_path).resolve())
