@@ -7,6 +7,15 @@ Static subset boundary (Decision 1):
     - <%= mvu.get('X.Y') %>
     - <%= locals.X.Y %>
     - <%- ... %>                 (same patterns, but flagged Lv.4)
+    - getvar('X.Y')              in any context (output tag, <%_ scriptlet,
+                                 or bare @@if macro text)
+
+  Supported tag shapes:
+    - <%= ... %> / <%- ... %>    output tags
+    - <%_ ... _%> / <% ... %>    scriptlet tags (control flow; their inner
+                                 getvar() calls are extracted, the tag itself
+                                 is never treated as an output reference)
+    - <%# ... %>                 comment tags (ignored)
 
   Not supported (is_static=False, noted but not errored):
     - Dynamic property names: vars[props.key]
@@ -36,6 +45,7 @@ class EJSVariableReference:
     is_safe: bool        # True for <%=, False for <%-
     is_static: bool
     note: Optional[str] = None
+    source: Optional[str] = None  # "output" / "scriptlet" / "macro" / "getvar"
 
 
 @dataclass
@@ -55,6 +65,7 @@ class EJSParseResult:
                     "is_safe": ref.is_safe,
                     "is_static": ref.is_static,
                     "note": ref.note,
+                    "source": ref.source,
                 }
                 for ref in self.variable_refs
             ],
@@ -65,6 +76,13 @@ class EJSParseResult:
 
 # Find <%= ... %> or <%- ... %> output tags (non-greedy, DOTALL)
 _OUTPUT_TAG_RE = re.compile(r"<%([=\-])\s*([\s\S]*?)\s*%>", re.DOTALL)
+
+# Find getvar('X.Y') calls in ANY context (output tag, scriptlet, @@if macro).
+# Captures the first string argument as the variable path.
+_GETVAR_RE = re.compile(r"\bgetvar\s*\(\s*['\"]([^'\"]+)['\"]")
+
+# Find <%- ... %> unsafe output tags (used to mark getvar refs as unsafe)
+_UNSAFE_OUTPUT_TAG_RE = re.compile(r"<%-([\s\S]*?)%>", re.DOTALL)
 
 # Match mvu.get('X.Y') / Mvu.getMvuData('X.Y') / mvu.getData('X.Y')
 _MVU_GET_RE = re.compile(
@@ -180,13 +198,25 @@ class EJSParser:
     # ── Variable extraction ─────────────────────────────────────────
 
     def _extract_variable_references(self, content: str) -> List[EJSVariableReference]:
-        """Extract variable references from <%= ... %> and <%- ... %> tags."""
+        """Extract variable references from EJS content.
+
+        Two passes:
+          1. Output tags (<%= ... %> / <%- ... %>) — plain path expressions;
+             getvar() expressions inside them are deferred to pass 2 to
+             avoid duplicates.
+          2. getvar('X.Y') calls anywhere (output tags, <%_ scriptlets,
+             @@if macro text, ...).
+        """
         refs: List[EJSVariableReference] = []
         for match in _OUTPUT_TAG_RE.finditer(content):
             output_type = match.group(1)  # "=" or "-"
             expr = match.group(2).strip()
             line = content[:match.start()].count("\n") + 1
             is_safe = (output_type == "=")
+
+            # getvar() expressions are handled by the global pass (dedupe)
+            if _GETVAR_RE.match(expr):
+                continue
 
             path, is_static, note = self._try_extract_path(expr)
             refs.append(EJSVariableReference(
@@ -196,6 +226,44 @@ class EJSParser:
                 is_safe=is_safe,
                 is_static=is_static,
                 note=note,
+                source="output",
+            ))
+
+        refs.extend(self._extract_getvar_references(content))
+        return refs
+
+    def _extract_getvar_references(self, content: str) -> List[EJSVariableReference]:
+        """Extract getvar('X.Y') references from any context.
+
+        getvar() is the MVU card-engine way to read a variable.  It appears
+        inside <%_ ... _%> scriptlets, <%= ... %> output tags, and bare
+        @@if getvar(...) macro lines.  A reference inside a <%- ... %> output
+        tag is marked unsafe (and will be flagged Lv.4 by the caller).
+        """
+        refs: List[EJSVariableReference] = []
+        unsafe_ranges = [
+            (m.start(), m.end())
+            for m in _UNSAFE_OUTPUT_TAG_RE.finditer(content)
+        ]
+        for match in _GETVAR_RE.finditer(content):
+            path = match.group(1)
+            # Normalize like output-tag paths: strip stat_data./data./locals.
+            # prefix so the path matches schema paths (e.g. getvar('stat_data.世界.当前幕')
+            # → path 世界.当前幕).
+            m = _DOTTED_ACCESS_RE.match(path)
+            if m:
+                path = m.group(1)
+            line = content[:match.start()].count("\n") + 1
+            is_safe = not any(
+                start <= match.start() < end for start, end in unsafe_ranges
+            )
+            refs.append(EJSVariableReference(
+                raw=f"getvar('{path}')",
+                path=path,
+                line=line,
+                is_safe=is_safe,
+                is_static=True,
+                source="getvar",
             ))
         return refs
 

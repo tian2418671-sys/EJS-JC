@@ -79,3 +79,74 @@ def test_clean_ejs_no_errors():
     result = parser.parse(content, "test.ejs")
     assert len(result.check_results) == 0
     assert len(result.variable_refs) == 2
+
+
+# ── Phase 2+ : <%_ %> scriptlets + getvar() extraction ───────────────────
+
+
+def test_scriptlet_getvar_extracted():
+    """getvar() inside a <%_ ... _%> scriptlet should be extracted."""
+    parser = EJSParser()
+    content = (
+        "@@private\n"
+        "<%_ const act = getvar('stat_data.世界.当前幕', "
+        "{ defaults: '第一幕·觉醒' }); _%>\n"
+        "<%_ if (act === '第一幕·觉醒') { _%>当前剧情<%_ } _%>"
+    )
+    result = parser.parse(content, "test.ejs")
+    getvars = [r for r in result.variable_refs if r.source == "getvar"]
+    assert len(getvars) == 1
+    ref = getvars[0]
+    assert ref.path == "世界.当前幕"
+    assert ref.is_static is True
+    assert ref.is_safe is True
+
+
+def test_getvar_in_macro_text():
+    """getvar() in bare @@if macro text (no EJS tag) should be extracted."""
+    parser = EJSParser()
+    content = "@@if getvar('stat_data.世界.当前幕', { defaults: '' }).includes('第四幕')"
+    result = parser.parse(content, "test.ejs")
+    assert len(result.variable_refs) == 1
+    ref = result.variable_refs[0]
+    assert ref.path == "世界.当前幕"
+    assert ref.is_static is True
+    assert ref.source == "getvar"
+
+
+def test_getvar_in_unescaped_output_is_unsafe():
+    """getvar() inside <%- ... %> should be flagged unsafe + Lv.4."""
+    parser = EJSParser()
+    content = "<%- getvar('data.x') %>"
+    result = parser.parse(content, "test.ejs")
+    lv4 = [e for e in result.check_results if e.level.value == "Lv.4"]
+    assert len(lv4) == 1
+    ref = result.variable_refs[0]
+    assert ref.is_safe is False
+    assert ref.path == "x"
+
+
+def test_scriptlet_no_false_output_ref():
+    """Plain scriptlet without getvar should yield no variable refs."""
+    parser = EJSParser()
+    content = "<%_ if (x > 1) { _%>text<%_ } _%>"
+    result = parser.parse(content, "test.ejs")
+    assert len(result.variable_refs) == 0
+    assert len(result.check_results) == 0
+
+
+def test_scriptlet_pairing_no_errors():
+    """<%_ ... _%> paired scriptlets should not raise pairing errors."""
+    parser = EJSParser()
+    content = "<%_ const a = 1; _%>\n<%_ if (a) { _%>ok<%_ } _%>"
+    result = parser.parse(content, "test.ejs")
+    assert len(result.check_results) == 0
+
+
+def test_getvar_quoted_path_variants():
+    """getvar() accepts single or double quoted paths."""
+    parser = EJSParser()
+    content = "<%= getvar(\"主角.好感度\") %>"
+    result = parser.parse(content, "test.ejs")
+    assert len(result.variable_refs) == 1
+    assert result.variable_refs[0].path == "主角.好感度"
