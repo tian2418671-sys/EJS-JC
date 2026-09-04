@@ -34,6 +34,7 @@ class ContentBlock:
     file_type: str          # worldbook / script / interface / card_text
     content: str            # text to check (may be empty)
     json_pointer: str       # JSON pointer into card dict (e.g. /data/character_book/entries/0/content)
+    label: str = ""         # entry comment/id (used for initvar detection)
 
 
 @dataclass
@@ -110,11 +111,15 @@ def write_card(path: str, card_dict: dict) -> None:
 
 
 def extract_schema_dict(card: CharacterCard) -> Optional[dict]:
-    """Find the embedded '# 变量初始值' block and parse it into a data-shape dict.
+    """Find the embedded initial-variable block and parse it into a data-shape dict.
 
-    The block is detected by its content prefix (real cards use arbitrary
-    comments such as '[InitVar]请勿打开'), so we scan block contents rather
-    than file labels.
+    Real MVU cards locate the block by the worldbook entry's *comment* label
+    (``[InitVar]请勿打开``, ``[InitialVariables]``, ``@@initial_variables``,
+    ``InitVar不要开``…) rather than a fixed content prefix.  Content appears in
+    one of three shapes:
+      1. ``# 变量初始值`` title + indented YAML
+      2. bare indented YAML (optionally after a ``---`` document marker)
+      3. an embedded JSON object (may carry ``$meta`` / ``$schema`` metadata keys)
 
     Returns None if no initial-variable block exists or parsing fails
     (caller falls back to degraded mode).
@@ -122,12 +127,63 @@ def extract_schema_dict(card: CharacterCard) -> Optional[dict]:
     for block in card.blocks:
         if block.file_type != "worldbook":
             continue
-        if block.content.lstrip().startswith("# 变量初始值"):
-            try:
-                return parse_indented_block(block.content)
-            except ValueError:
-                return None
+        if not _is_initvar_block(block):
+            continue
+        parsed = _parse_initvar_content(block.content)
+        if parsed:  # skip empty {} from blank placeholder blocks
+            return parsed
     return None
+
+
+_INITVAR_LABEL_RE = re.compile(
+    r"initvar|initialvariables|变量初始值|初始值", re.IGNORECASE
+)
+
+
+def _is_initvar_block(block: ContentBlock) -> bool:
+    """True if a worldbook block is an initial-variable definition."""
+    if _INITVAR_LABEL_RE.search(block.label):
+        return True
+    return block.content.lstrip().startswith("# 变量初始值")
+
+
+def _parse_initvar_content(content: str) -> Optional[dict]:
+    """Parse initvar content as JSON (with $meta stripped) or indented YAML."""
+    text = content.lstrip("\ufeff")
+    # Strip leading blank / #-comment lines and a '---' YAML document marker.
+    lines = text.splitlines()
+    while lines:
+        s = lines[0].strip()
+        if not s or s.startswith("#") or s == "---":
+            lines.pop(0)
+        else:
+            break
+    stripped = "\n".join(lines)
+
+    if stripped.lstrip().startswith("{"):
+        try:
+            data = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return _strip_meta(data) if isinstance(data, dict) else None
+
+    try:
+        return parse_indented_block(stripped)
+    except ValueError:
+        return None
+
+
+def _strip_meta(data):
+    """Recursively remove ``$meta`` / ``$schema`` metadata keys from initvar JSON."""
+    if isinstance(data, dict):
+        return {
+            k: _strip_meta(v)
+            for k, v in data.items()
+            if not str(k).startswith("$")
+        }
+    if isinstance(data, list):
+        return [_strip_meta(v) for v in data]
+    return data
 
 
 # ── PNG extraction ────────────────────────────────────────────────────
@@ -248,8 +304,12 @@ def _build_blocks(data: dict) -> List[ContentBlock]:
     blocks: List[ContentBlock] = []
 
     # ── Worldbook entries ──────────────────────────────────────────
-    chara_book = data.get("character_book") or {}
-    entries = chara_book.get("entries") or []
+    chara_book = data.get("character_book")
+    if not isinstance(chara_book, dict):
+        chara_book = {}
+    entries = chara_book.get("entries")
+    if not isinstance(entries, list):
+        entries = []
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
@@ -260,6 +320,7 @@ def _build_blocks(data: dict) -> List[ContentBlock]:
             file_type="worldbook",
             content=content,
             json_pointer=_pointer(["data", "character_book", "entries", i, "content"]),
+            label=str(label),
         ))
 
     # ── Card text fields ───────────────────────────────────────────
@@ -295,8 +356,12 @@ def _build_blocks(data: dict) -> List[ContentBlock]:
                 ))
 
     # ── Regex scripts ──────────────────────────────────────────────
-    ext = data.get("extensions") or {}
-    regex_scripts = ext.get("regex_scripts") or []
+    ext = data.get("extensions")
+    if not isinstance(ext, dict):
+        ext = {}
+    regex_scripts = ext.get("regex_scripts")
+    if not isinstance(regex_scripts, list):
+        regex_scripts = []
     for i, script in enumerate(regex_scripts):
         if not isinstance(script, dict):
             continue
@@ -324,16 +389,32 @@ def _build_blocks(data: dict) -> List[ContentBlock]:
             ))
 
     # ── Tavern helper scripts ──────────────────────────────────────
-    th = ext.get("tavern_helper") or {}
-    th_scripts = th.get("scripts") or []
-    for i, script in enumerate(th_scripts):
-        if isinstance(script, str) and script.strip():
-            blocks.append(ContentBlock(
-                file_path=f"脚本/tavern_helper_{i:03d}",
-                file_type="script",
-                content=script,
-                json_pointer=_pointer(["data", "extensions", "tavern_helper", "scripts", i]),
-            ))
+    # Real cards store extensions.tavern_helper either as a dict or as a
+    # list of [key, value] pairs (e.g. [["scripts", [...]], ["variables", {}]]).
+    th = ext.get("tavern_helper")
+    th_scripts = []
+    if isinstance(th, dict):
+        th_scripts = th.get("scripts") or []
+    elif isinstance(th, list):
+        for pair in th:
+            if isinstance(pair, list) and len(pair) == 2 and pair[0] == "scripts":
+                th_scripts = pair[1] or []
+                break
+    if isinstance(th_scripts, list):
+        for i, script in enumerate(th_scripts):
+            if isinstance(script, dict):
+                content = script.get("content") or ""
+            elif isinstance(script, str):
+                content = script
+            else:
+                continue
+            if content.strip():
+                blocks.append(ContentBlock(
+                    file_path=f"脚本/tavern_helper_{i:03d}",
+                    file_type="script",
+                    content=content,
+                    json_pointer=_pointer(["data", "extensions", "tavern_helper", "scripts", i]),
+                ))
 
     return blocks
 

@@ -253,6 +253,13 @@ class EJSParser:
             m = _DOTTED_ACCESS_RE.match(path)
             if m:
                 path = m.group(1)
+            # Strip a trailing [N] MVU value-accessor (stat_data stores
+            # [值, 说明] arrays; [0] is the value, [1] the description).
+            #   getvar('stat_data.Nova.affection[0]') → Nova.affection
+            path = re.sub(r"\[\d+\]$", "", path)
+            # Normalize remaining mid-path [N] → .N so linkage wildcarding works:
+            #   getvar('stat_data.主角.物品栏[0].名称[0]') → 主角.物品栏.0.名称
+            path = re.sub(r"\[(\d+)\]", r".\1", path)
             line = content[:match.start()].count("\n") + 1
             is_safe = not any(
                 start <= match.start() < end for start, end in unsafe_ranges

@@ -150,3 +150,22 @@ def test_getvar_quoted_path_variants():
     result = parser.parse(content, "test.ejs")
     assert len(result.variable_refs) == 1
     assert result.variable_refs[0].path == "主角.好感度"
+
+
+def test_getvar_array_index_normalized():
+    """getvar('stat_data.X.Y[0]') value-accessor should normalize to X.Y."""
+    parser = EJSParser()
+    content = "<%_ const v = getvar('stat_data.Nova.affection[0]'); _%>"
+    result = parser.parse(content, "test.ejs")
+    ref = result.variable_refs[0]
+    assert ref.path == "Nova.affection"
+    assert ref.is_static is True
+
+
+def test_getvar_midpath_index_normalized():
+    """Mid-path [N] indices become .N (wildcard-friendly for linkage)."""
+    parser = EJSParser()
+    content = "<%_ const v = getvar('stat_data.主角.物品栏[0].名称[0]'); _%>"
+    result = parser.parse(content, "test.ejs")
+    ref = result.variable_refs[0]
+    assert ref.path == "主角.物品栏.0.名称"

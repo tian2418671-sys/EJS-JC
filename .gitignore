@@ -14,3 +14,6 @@ dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# Reference card database (large PNG binaries, kept locally only)
+数据库/

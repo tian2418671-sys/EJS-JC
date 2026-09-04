@@ -86,3 +86,34 @@ def test_boolean_before_integer():
     types = info.get_path_types()
     assert types["flag"] == "boolean"
     assert types["count"] == "number"
+
+
+def test_mvu_value_pair_is_leaf():
+    """MVU [值, 说明] two-element arrays should be treated as leaf variables."""
+    data = {
+        "安达樱": {
+            "位置": ["体育馆二楼", "当前所在位置"],
+            "好感度": [5, "[0,300]好感度"],
+        }
+    }
+    loader = SchemaLoader()
+    info = loader.load_from_dict(data, "init.json")
+    types = info.get_path_types()
+    # value type is inferred from the first element, not the array itself
+    assert types["安达樱.位置"] == "string"
+    assert types["安达樱.好感度"] == "number"
+    # both are leaves
+    leaves = info.get_leaf_paths()
+    assert "安达樱.位置" in leaves
+    assert "安达樱.好感度" in leaves
+
+
+def test_real_array_not_value_pair():
+    """A list of objects is a real array, not an MVU value pair."""
+    data = {"主角": {"物品栏": [{"名称": "长剑", "数量": 1}]}}
+    loader = SchemaLoader()
+    info = loader.load_from_dict(data, "init.json")
+    assert "主角.物品栏" in info.get_path_set()
+    assert "主角.物品栏.*.名称" in info.get_path_set()
+    # array itself is not a leaf
+    assert "主角.物品栏" not in info.get_leaf_paths()

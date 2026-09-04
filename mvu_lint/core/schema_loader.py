@@ -116,6 +116,37 @@ class SchemaLoader:
 
     # ── Pure data shape ─────────────────────────────────────────────
 
+    @staticmethod
+    def _is_mvu_value_pair(val) -> bool:
+        """Detect MVU's ``[值, 说明]`` two-element array (value + description).
+
+        MVU stores each variable as a 2-element list: ``[value, description]``
+        where the second element is the human-readable description string
+        (see EJS 实战指南 §2.2).  A real data array (e.g. a list of objects)
+        has a different shape, so it is not treated as a value pair.
+        """
+        return (
+            isinstance(val, list)
+            and len(val) == 2
+            and isinstance(val[1], str)
+        )
+
+    @staticmethod
+    def _scalar_type(val) -> str:
+        if isinstance(val, bool):
+            return "boolean"
+        if isinstance(val, (int, float)):
+            return "number"
+        if isinstance(val, str):
+            return "string"
+        if isinstance(val, list):
+            return "array"
+        if isinstance(val, dict):
+            return "object"
+        if val is None:
+            return "null"
+        return "any"
+
     def _parse_data_shape(
         self, data: dict, prefix: str = ""
     ) -> List[SchemaPath]:
@@ -133,7 +164,12 @@ class SchemaLoader:
             elif isinstance(val, str):
                 node_type, is_leaf = "string", True
             elif isinstance(val, list):
-                node_type, is_leaf = "array", False
+                if self._is_mvu_value_pair(val):
+                    # MVU [值, 说明] array → a single leaf variable
+                    node_type = self._scalar_type(val[0])
+                    is_leaf = True
+                else:
+                    node_type, is_leaf = "array", False
             elif isinstance(val, dict):
                 node_type, is_leaf = "object", False
             elif val is None:
