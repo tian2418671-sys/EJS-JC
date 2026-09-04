@@ -18,6 +18,16 @@ from typing import Dict, List, Optional, Set
 from ..core.ejs_parser import EJSVariableReference
 from ..core.schema_loader import SchemaInfo
 from ..models.check_result import CheckResult, ErrorCategory, ErrorLevel
+from ..core.json_patch import (
+    VALID_OPS as JSON_PATCH_OPS,
+    SchemaPathMatcher,
+    extract_json_patch_blocks,
+    extract_update_variable_blocks,
+    infer_json_type,
+    is_template_text,
+    json_pointer_to_segments,
+    parse_json_patch,
+)
 
 
 @dataclass
@@ -257,6 +267,274 @@ class StaticChecker:
                 ))
 
         return results
+
+    def check_json_patch(
+        self,
+        content: str,
+        file_path: str = "",
+        schema_info: Optional[SchemaInfo] = None,
+    ) -> List[CheckResult]:
+        """Check ``<UpdateVariable>`` + JSON Patch blocks for path validity.
+
+        Real MVU cards carry variable updates as a ``<UpdateVariable>`` block
+        with a ``<JSONPatch>`` array (RFC 6902).  This validates concrete
+        patches only:
+
+          * operation legality (add/replace/remove/move, ``from`` on move),
+          * JSON Pointer well-formedness,
+          * path → schema path-tree linkage and value type compatibility.
+
+        Everything else is skipped silently.  Real cards are full of
+        instruction prose that merely *mentions* ``<UpdateVariable>`` /
+        ``<JSONPatch>`` (format rules, regex scripts), and of format-spec
+        templates whose paths are placeholders (``${...}``, ``/<顶层根>/...``).
+        Neither is concrete data, so neither produces findings.
+        """
+        self._file_path = file_path
+        self._mvu_counter = 0
+
+        results: List[CheckResult] = []
+
+        matcher: Optional[SchemaPathMatcher] = None
+        schema_types: dict = {}
+        if schema_info is not None:
+            schema_paths = schema_info.get_path_set()
+            if schema_paths:
+                matcher = SchemaPathMatcher(schema_paths)
+                schema_types = schema_info.get_path_types()
+
+        blocks, _unclosed = extract_update_variable_blocks(content)
+        for block in blocks:
+            jp_blocks, _jp_unclosed = extract_json_patch_blocks(
+                block.inner, block.line
+            )
+            for json_text, line in jp_blocks:
+                if is_template_text(json_text):
+                    continue  # format spec for the AI — not concrete data
+                try:
+                    ops = parse_json_patch(json_text, line)
+                except ValueError:
+                    continue  # prose/template mention — nothing to validate
+
+                for op in ops:
+                    self._check_json_patch_op(
+                        results, op, matcher, schema_types
+                    )
+
+        return results
+
+    def _check_json_patch_op(
+        self,
+        results: List[CheckResult],
+        op,
+        matcher: Optional[SchemaPathMatcher],
+        schema_types: dict,
+    ) -> None:
+        """Validate a single JSON Patch operation."""
+        if not op.op:
+            results.append(self._make_mvu_result(
+                level=ErrorLevel.LV2,
+                message=f"第 {op.line} 行：JSONPatch 操作缺少 op 字段",
+                line=op.line,
+                suggestion="每个操作必须声明 op（add/replace/remove/move）",
+            ))
+            return
+        if op.op not in JSON_PATCH_OPS:
+            results.append(self._make_mvu_result(
+                level=ErrorLevel.LV3,
+                message=f"第 {op.line} 行：不支持的 op「{op.op}」",
+                line=op.line,
+                path=op.path or None,
+                suggestion="op 只支持 add / replace / remove / move",
+            ))
+            return
+        if not op.path:
+            results.append(self._make_mvu_result(
+                level=ErrorLevel.LV2,
+                message=f"第 {op.line} 行：JSONPatch 操作缺少 path 字段",
+                line=op.line,
+                suggestion="每个操作必须声明 JSON Pointer path",
+            ))
+            return
+        if op.op == "move" and op.from_ is None:
+            results.append(self._make_mvu_result(
+                level=ErrorLevel.LV2,
+                message=f"第 {op.line} 行：move 操作缺少 from 字段",
+                line=op.line,
+                path=op.path,
+                suggestion="move 必须同时声明 from 与 path",
+            ))
+            return
+
+        if is_template_text(op.path):
+            return  # placeholder path in a format spec
+
+        segments = json_pointer_to_segments(op.path)
+        if segments is None:
+            results.append(self._make_mvu_result(
+                level=ErrorLevel.LV2,
+                message=(
+                    f"第 {op.line} 行：path「{op.path}」不是合法的 "
+                    f"JSON Pointer"
+                ),
+                line=op.line,
+                path=op.path,
+                suggestion="JSON Pointer 以 / 开头，~ 后必须跟 0 或 1",
+            ))
+            return
+
+        if matcher is None:
+            return  # degraded mode — no schema, no linkage checks
+
+        self._check_json_patch_linkage(results, op, segments, matcher, schema_types)
+
+    def _check_json_patch_linkage(
+        self,
+        results: List[CheckResult],
+        op,
+        segments: List[str],
+        matcher: SchemaPathMatcher,
+        schema_types: dict,
+    ) -> None:
+        """Validate a concrete JSON Pointer path against the schema tree."""
+        opname = op.op
+        path = op.path
+
+        if opname == "replace":
+            matched = matcher.match(segments)
+            if matched is None:
+                results.append(self._make_mvu_result(
+                    level=ErrorLevel.LV3,
+                    message=f"第 {op.line} 行：路径「{path}」在 Schema 中不存在",
+                    line=op.line,
+                    path=path,
+                    suggestion="replace 只能作用于已存在的完整路径",
+                ))
+                return
+            expected = schema_types.get(matched, "any")
+            if expected in ("object", "array"):
+                return  # replacing a whole container is legal JSON Patch
+            if op.has_value:
+                actual = infer_json_type(op.value)
+                if not self._type_compatible(expected, actual, "="):
+                    results.append(self._make_mvu_result(
+                        level=ErrorLevel.LV3,
+                        message=(
+                            f"第 {op.line} 行：类型不匹配 — 路径「{path}」"
+                            f"期望 {expected}，但值为 {actual}"
+                        ),
+                        line=op.line,
+                        path=path,
+                        suggestion=f"将值改为 {expected} 类型",
+                    ))
+
+        elif opname == "remove":
+            if not matcher.exists(segments):
+                results.append(self._make_mvu_result(
+                    level=ErrorLevel.LV3,
+                    message=f"第 {op.line} 行：路径「{path}」在 Schema 中不存在，无法 remove",
+                    line=op.line,
+                    path=path,
+                    suggestion="remove 只能作用于已存在的路径",
+                ))
+
+        elif opname == "add":
+            self._check_json_patch_add(results, op, segments, matcher, schema_types)
+
+        elif opname == "move":
+            from_segments = json_pointer_to_segments(op.from_ or "")
+            if from_segments is None:
+                results.append(self._make_mvu_result(
+                    level=ErrorLevel.LV2,
+                    message=f"第 {op.line} 行：move 的 from「{op.from_}」不是合法的 JSON Pointer",
+                    line=op.line,
+                    path=op.from_,
+                    suggestion="from 必须以 / 开头",
+                ))
+                return
+            if not matcher.exists(from_segments):
+                results.append(self._make_mvu_result(
+                    level=ErrorLevel.LV3,
+                    message=f"第 {op.line} 行：move 的 from 路径「{op.from_}」在 Schema 中不存在",
+                    line=op.line,
+                    path=op.from_,
+                    suggestion="move 只能迁移已存在的路径",
+                ))
+            # destination may be new; only require the parent to exist
+            if segments:
+                parent = segments[:-1]
+                if not matcher.exists(parent):
+                    results.append(self._make_mvu_result(
+                        level=ErrorLevel.LV3,
+                        message=f"第 {op.line} 行：move 的目标父路径「{'.'.join(parent)}」不存在",
+                        line=op.line,
+                        path=path,
+                        suggestion="目标路径的父对象必须已存在",
+                    ))
+
+    def _check_json_patch_add(
+        self,
+        results: List[CheckResult],
+        op,
+        segments: List[str],
+        matcher: SchemaPathMatcher,
+        schema_types: dict,
+    ) -> None:
+        """Validate an ``add`` operation (may target a new key under a container)."""
+        path = op.path
+        if not segments:
+            results.append(self._make_mvu_result(
+                level=ErrorLevel.LV2,
+                message=f"第 {op.line} 行：add 不能作用于根路径",
+                line=op.line,
+                path=path,
+                suggestion="add 至少需要一个顶层容器路径",
+            ))
+            return
+
+        last = segments[-1]
+        parent = segments[:-1]
+
+        if not parent:
+            # Adding a brand-new top-level container.
+            if not matcher.exists([last]):
+                results.append(self._make_mvu_result(
+                    level=ErrorLevel.LV3,
+                    message=f"第 {op.line} 行：新增顶层变量「{last}」不在 Schema 顶层容器中",
+                    line=op.line,
+                    path=path,
+                    suggestion="确认顶层变量名与变量结构一致",
+                ))
+            return
+
+        if not matcher.exists(parent):
+            results.append(self._make_mvu_result(
+                level=ErrorLevel.LV3,
+                message=f"第 {op.line} 行：add 的父路径「{'.'.join(parent)}」在 Schema 中不存在",
+                line=op.line,
+                path=path,
+                suggestion="先 add 父对象，再 add 其子字段",
+            ))
+            return
+
+        # If the full path is an existing leaf, the add behaves like a set;
+        # type-check the value in that case.
+        matched = matcher.match(segments)
+        if matched is not None and op.has_value:
+            expected = schema_types.get(matched, "any")
+            if expected not in ("object", "array"):
+                actual = infer_json_type(op.value)
+                if not self._type_compatible(expected, actual, "="):
+                    results.append(self._make_mvu_result(
+                        level=ErrorLevel.LV3,
+                        message=(
+                            f"第 {op.line} 行：类型不匹配 — 路径「{path}」"
+                            f"期望 {expected}，但值为 {actual}"
+                        ),
+                        line=op.line,
+                        path=path,
+                        suggestion=f"将值改为 {expected} 类型",
+                    ))
 
     # ── MVU command extraction ──────────────────────────────────────
 

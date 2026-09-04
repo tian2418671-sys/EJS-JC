@@ -138,6 +138,7 @@ class AppController:
                     has_ejs = "<%" in content
                     has_mvu = "<!--" in content and "mvu" in content.lower()
                     has_initvar = "initvar" in content
+                    has_update_var = "<UpdateVariable" in content
 
                     if has_ejs or has_mvu or has_initvar:
                         scanned += 1
@@ -157,6 +158,16 @@ class AppController:
                             content, entry.file_path, self.schema_info
                         )
                         for check in mvu_results:
+                            stored_id = self.db.insert_check_result(check, prefix="MVU")
+                            if stored_id:
+                                inserted += 1
+
+                    # 2b. <UpdateVariable> + JSON Patch path validation
+                    if has_update_var:
+                        patch_results = self.checker.check_json_patch(
+                            content, entry.file_path, self.schema_info
+                        )
+                        for check in patch_results:
                             stored_id = self.db.insert_check_result(check, prefix="MVU")
                             if stored_id:
                                 inserted += 1

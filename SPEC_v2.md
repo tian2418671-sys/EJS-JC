@@ -151,7 +151,8 @@ Phase 1 GUI 跑通后立即做空壳打包验证。
 | 向量检索降级 | NumPy（暴力余弦） | — | sqlite-vec 加载失败时自动降级，确保 RAG 不失效 |
 | 数据库驱动 | Python sqlite3（内置） | — | 标准库，无额外二进制依赖 |
 | YAML 解析 | PyYAML | 6.0+ | Python 生态标准库 |
-| EJS 检查 | 纯 Python 自实现（ejs_parser.py） | — | 彻底消除 Node.js 依赖；定义静态子集边界（固定写法可提取，动态表达式仅提示） |
+| EJS 检查 | 纯 Python 自实现（`ejs_parser.py`） | — | 彻底消除 Node.js 依赖；定义静态子集边界（固定写法可提取，动态表达式仅提示） |
+| MVU 命令检查 | 纯 Python 自实现（`static_checker.py`） | — | 支持 `<!-- mvu: -->` 注释与 `<UpdateVariable>` + JSON Patch（RFC 6902）两种真实卡格式；JSON Pointer 路径映射到 schema 路径树做联动校验 |
 | Schema 解析 | 主推 schema.json（双形态兼容：标准 JSON Schema / 纯数据形状）；schema.ts 仅降级文本扫描 | — | 避免引入 TS AST 解析器（tree-sitter/tsc），保持轻量 |
 | ZIP 处理 | zipfile（内置） | — | 标准库 |
 | 打包工具 | PyInstaller | 6.0+ | 快速打包为单 EXE，核心包目标 ≤ 200MB（模型外置） |
